@@ -16,6 +16,7 @@ from teleprompter_app.speech.recognizer import (
     SpeechRecognizer,
     StatusCallback,
 )
+from teleprompter_app.core.tokenizer import normalize_word
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         self.model_path = model_path
         self.device_index = device_index
         self.sample_rate = sample_rate
-        self.block_size = block_size
+        self.block_size = min(block_size, max(800, sample_rate // 8))
         self._stop_event = Event()
         self._thread: Thread | None = None
         self._stream: AudioStream | None = None
@@ -79,6 +80,7 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         on_error: ErrorCallback | None,
     ) -> None:
         emitted_word_count = 0
+        emitted_partial_words: list[str] = []
 
         try:
             if not self.model_path.exists():
@@ -115,18 +117,23 @@ class VoskSpeechRecognizer(SpeechRecognizer):
                 if recognizer.AcceptWaveform(chunk):
                     payload = json.loads(recognizer.Result())
                     result = self._payload_to_result(payload, is_final=True)
-                    emitted_word_count = min(emitted_word_count, len(result.words))
-                    new_words = result.words[emitted_word_count:]
+                    new_words = self._new_words_after_partial(result.words, emitted_partial_words)
                     emitted_word_count = 0
+                    emitted_partial_words = []
                     if new_words:
                         on_result(RecognitionResult(" ".join(w.word for w in new_words), new_words, True))
                 else:
                     payload = json.loads(recognizer.PartialResult())
                     result = self._payload_to_result(payload, is_final=False)
                     if result.words:
-                        emitted_word_count = min(emitted_word_count, len(result.words))
-                        new_words = result.words[emitted_word_count:]
+                        current_partial_words = [normalize_word(word.word) for word in result.words]
+                        if self._starts_with(current_partial_words, emitted_partial_words):
+                            emitted_word_count = min(emitted_word_count, len(result.words))
+                            new_words = result.words[emitted_word_count:]
+                        else:
+                            new_words = result.words
                         emitted_word_count = len(result.words)
+                        emitted_partial_words = current_partial_words
                         if new_words:
                             on_result(RecognitionResult(" ".join(w.word for w in new_words), new_words, False))
 
@@ -162,3 +169,18 @@ class VoskSpeechRecognizer(SpeechRecognizer):
             words = [RecognizedWord(word=word, is_final=is_final) for word in text.split()]
 
         return RecognitionResult(text=text, words=words, is_final=is_final)
+
+    def _new_words_after_partial(
+        self,
+        final_words: list[RecognizedWord],
+        emitted_partial_words: list[str],
+    ) -> list[RecognizedWord]:
+        final_normalized = [normalize_word(word.word) for word in final_words]
+        if self._starts_with(final_normalized, emitted_partial_words):
+            return final_words[len(emitted_partial_words) :]
+        return final_words
+
+    def _starts_with(self, words: list[str], prefix: list[str]) -> bool:
+        if len(prefix) > len(words):
+            return False
+        return words[: len(prefix)] == prefix

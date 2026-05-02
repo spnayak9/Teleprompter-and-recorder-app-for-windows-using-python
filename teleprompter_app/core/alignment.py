@@ -15,6 +15,9 @@ except ImportError:  # rapidfuzz is preferred but difflib keeps the app usable.
     fuzz = None
 
 
+FILLER_WORDS = {"ah", "er", "erm", "hm", "hmm", "uh", "um"}
+
+
 @dataclass(slots=True)
 class AlignmentMatch:
     """Result of aligning a spoken word to a script token."""
@@ -31,19 +34,26 @@ class AlignmentEngine:
 
     def __init__(
         self,
-        lookahead: int = 14,
-        recovery_lookahead: int = 42,
-        start_lookahead: int = 8,
-        threshold: float = 72.0,
+        recovery_lookahead: int = 18,
+        initial_recovery_lookahead: int = 6,
+        short_phrase_lookahead: int = 6,
+        threshold: float = 68.0,
+        phrase_threshold: float = 82.0,
+        phrase_words: int = 2,
+        max_pending_words: int = 5,
     ) -> None:
-        self.lookahead = lookahead
         self.recovery_lookahead = recovery_lookahead
-        self.start_lookahead = start_lookahead
+        self.initial_recovery_lookahead = initial_recovery_lookahead
+        self.short_phrase_lookahead = short_phrase_lookahead
         self.threshold = threshold
+        self.phrase_threshold = phrase_threshold
+        self.phrase_words = phrase_words
+        self.max_pending_words = max_pending_words
         self.tokens: list[Token] = []
         self.next_index = 0
         self.last_match_index: int | None = None
         self.last_spoken_normalized = ""
+        self.pending_spoken: list[tuple[str, str, float | None]] = []
         self.miss_count = 0
 
     @property
@@ -58,6 +68,7 @@ class AlignmentEngine:
         self.next_index = 0
         self.last_match_index = None
         self.last_spoken_normalized = ""
+        self.pending_spoken = []
         self.miss_count = 0
 
     def align_words(self, spoken_words: Iterable[RecognizedWord | str]) -> list[AlignmentMatch]:
@@ -83,44 +94,97 @@ class AlignmentEngine:
         if not normalized:
             return None
 
+        if normalized in FILLER_WORDS:
+            return None
+
         if self._is_duplicate_repeat(normalized):
             return None
 
-        search_start = self._search_start()
-        search_end = self.next_index + self.lookahead
-        if self.last_match_index is None:
-            search_end = self.start_lookahead
-        elif self.miss_count >= 4:
-            search_end = self.next_index + self.recovery_lookahead
+        expected_match = self._match_expected_word(normalized, spoken, confidence)
+        if expected_match is not None:
+            return expected_match
 
-        match = self._best_match(normalized, search_start, search_end)
-        if match is None:
-            self.miss_count += 1
+        self._remember_pending(normalized, spoken, confidence)
+        phrase_match = self._match_confirmed_phrase()
+        if phrase_match is not None:
+            return phrase_match
+
+        self.miss_count += 1
+        return None
+
+    def _match_expected_word(
+        self,
+        normalized: str,
+        spoken: str,
+        confidence: float | None,
+    ) -> AlignmentMatch | None:
+        if self.next_index >= len(self.tokens):
             return None
 
-        token_index, score = match
-        if token_index < self.next_index:
-            self.miss_count += 1
+        token = self.tokens[self.next_index]
+        score = self._word_score(normalized, token.normalized)
+        if not self._passes_word_threshold(normalized, token.normalized, score, self.threshold):
             return None
 
-        adaptive_threshold = self.threshold - min(self.miss_count * 3, 12)
-        if score < adaptive_threshold:
-            self.miss_count += 1
+        self.pending_spoken = []
+        return self._accept(self.next_index, spoken, confidence, score)
+
+    def _match_confirmed_phrase(self) -> AlignmentMatch | None:
+        if len(self.pending_spoken) < self.phrase_words or self.next_index >= len(self.tokens):
             return None
 
+        max_words = min(len(self.pending_spoken), self.max_pending_words)
+        recovery_lookahead = (
+            self.initial_recovery_lookahead
+            if self.last_match_index is None
+            else self.recovery_lookahead
+        )
+        search_end = min(len(self.tokens), self.next_index + recovery_lookahead)
+
+        for phrase_size in range(max_words, self.phrase_words - 1, -1):
+            phrase = self.pending_spoken[-phrase_size:]
+            best: tuple[int, float] | None = None
+
+            for candidate in range(self.next_index, search_end - phrase_size + 1):
+                scores = [
+                    self._word_score(spoken_word, self.tokens[candidate + offset].normalized)
+                    for offset, (spoken_word, _raw, _confidence) in enumerate(phrase)
+                ]
+                if not self._passes_phrase_threshold(phrase, candidate, scores):
+                    continue
+
+                distance_penalty = max(0, candidate - self.next_index) * 2.0
+                phrase_score = (sum(scores) / len(scores)) - distance_penalty
+                if best is None or phrase_score > best[1]:
+                    best = (candidate, phrase_score)
+
+            if best is not None:
+                candidate, phrase_score = best
+                target_index = candidate + phrase_size - 1
+                _normalized, raw, phrase_confidence = phrase[-1]
+                self.pending_spoken = []
+                return self._accept(target_index, raw, phrase_confidence, phrase_score)
+
+        return None
+
+    def _accept(
+        self,
+        token_index: int,
+        spoken: str,
+        confidence: float | None,
+        score: float,
+    ) -> AlignmentMatch:
+        token = self.tokens[token_index]
         self.miss_count = 0
         self.last_match_index = token_index
-        self.last_spoken_normalized = normalized
-
+        self.last_spoken_normalized = normalize_word(spoken)
         self.next_index = token_index + 1
+        return AlignmentMatch(token_index, spoken, token.text, min(score, 100.0), confidence)
 
-        token = self.tokens[token_index]
-        return AlignmentMatch(token_index, spoken, token.text, score, confidence)
-
-    def _search_start(self) -> int:
-        if self.last_match_index is None:
-            return 0
-        return self.next_index
+    def _remember_pending(self, normalized: str, spoken: str, confidence: float | None) -> None:
+        self.pending_spoken.append((normalized, spoken, confidence))
+        if len(self.pending_spoken) > self.max_pending_words:
+            self.pending_spoken = self.pending_spoken[-self.max_pending_words :]
 
     def _is_duplicate_repeat(self, normalized: str) -> bool:
         """Ignore repeated recognizer output unless the script itself repeats next."""
@@ -131,32 +195,50 @@ class AlignmentEngine:
             return True
         return self.tokens[self.next_index].normalized != normalized
 
-    def _best_match(self, spoken: str, start: int, end: int) -> tuple[int, float] | None:
-        best_index: int | None = None
-        best_score = 0.0
-        end = min(end, len(self.tokens))
+    def _passes_phrase_threshold(
+        self,
+        phrase: list[tuple[str, str, float | None]],
+        token_index: int,
+        scores: list[float],
+    ) -> bool:
+        if not scores:
+            return False
 
-        for index in range(start, end):
-            token = self.tokens[index]
-            if not token.normalized:
-                continue
+        distance = token_index - self.next_index
+        if len(phrase) <= self.phrase_words and distance > self.short_phrase_lookahead:
+            return False
 
-            lexical = self._ratio(spoken, token.normalized)
-            phonetic = 100.0 if self._soundex(spoken) == self._soundex(token.normalized) else 0.0
-            base_score = max(lexical, phonetic * 0.88)
+        for offset, (spoken_word, _raw, _confidence) in enumerate(phrase):
+            token_word = self.tokens[token_index + offset].normalized
+            if not self._passes_word_threshold(spoken_word, token_word, scores[offset], self.threshold):
+                return False
 
-            distance = index - self.next_index
-            position_bonus = max(0.0, 10.0 - (distance * 1.25))
-            score = base_score + position_bonus
+        return (sum(scores) / len(scores)) >= self.phrase_threshold
 
-            if score > best_score:
-                best_index = index
-                best_score = score
+    def _passes_word_threshold(
+        self,
+        spoken: str,
+        token: str,
+        score: float,
+        threshold: float,
+    ) -> bool:
+        if not token:
+            return False
+        if spoken == token:
+            return True
+        if min(len(spoken), len(token)) <= 3:
+            return False
+        return score >= threshold
 
-        if best_index is None:
-            return None
+    def _word_score(self, spoken: str, token: str) -> float:
+        if spoken == token:
+            return 100.0
+        lexical = self._ratio(spoken, token)
+        if min(len(spoken), len(token)) <= 3:
+            return lexical
 
-        return best_index, min(best_score, 100.0)
+        phonetic = 100.0 if self._soundex(spoken) == self._soundex(token) else 0.0
+        return max(lexical, phonetic * 0.88)
 
     def _ratio(self, left: str, right: str) -> float:
         if left == right:

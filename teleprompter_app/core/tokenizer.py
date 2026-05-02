@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-
-from bs4 import BeautifulSoup, NavigableString
+from typing import Any
 
 
 WORD_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[.'_-][A-Za-z0-9]+)*", re.UNICODE)
@@ -48,6 +47,8 @@ class ScriptTokenizer:
     skipped_parent_tags = {"script", "style", "code", "pre"}
 
     def tokenize_html(self, html: str) -> TokenizedDocument:
+        from bs4 import BeautifulSoup, NavigableString
+
         soup = BeautifulSoup(html, "html.parser")
         tokens: list[Token] = []
         text_cursor = 0
@@ -101,7 +102,7 @@ class ScriptTokenizer:
 
         return TokenizedDocument(str(soup), soup.get_text(), tokens)
 
-    def _should_tokenize_node(self, node: NavigableString) -> bool:
+    def _should_tokenize_node(self, node: Any) -> bool:
         parent = node.parent
         if parent is None:
             return False

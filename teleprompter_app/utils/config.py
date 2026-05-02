@@ -26,7 +26,7 @@ class AppSettings:
     microphone_index: int = -1
     vosk_model_path: str = os.environ.get("VOSK_MODEL_PATH", "models/vosk-model-small-en-us-0.15")
     sample_rate: int = 16000
-    audio_block_size: int = 4000
+    audio_block_size: int = 2000
 
     def updated(self, values: dict[str, Any]) -> "AppSettings":
         valid = {key: value for key, value in values.items() if hasattr(self, key)}

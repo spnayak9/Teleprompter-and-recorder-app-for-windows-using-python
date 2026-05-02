@@ -102,8 +102,13 @@ class TeleprompterView(QTextBrowser):
         color = QColor(self.settings.highlight_color)
         if not color.isValid():
             color = QColor("#ffd166")
-        color.setAlpha(95)
-        return color
+        background = QColor("#111318")
+        blend = 0.42
+        return QColor(
+            int((color.red() * blend) + (background.red() * (1 - blend))),
+            int((color.green() * blend) + (background.green() * (1 - blend))),
+            int((color.blue() * blend) + (background.blue() * (1 - blend))),
+        )
 
     def _center_cursor(self, cursor: QTextCursor) -> None:
         rect = self.cursorRect(cursor)
