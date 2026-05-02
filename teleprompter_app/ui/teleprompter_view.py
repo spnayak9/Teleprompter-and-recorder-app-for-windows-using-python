@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation
-from PySide6.QtGui import QColor, QTextCursor
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QFrame, QTextBrowser, QTextEdit
 
 from teleprompter_app.core.tokenizer import Token
@@ -22,6 +22,7 @@ class TeleprompterView(QTextBrowser):
         self.raw_html = ""
         self.current_index = -1
         self.progress_index = -1
+        self.painted_progress_index = -1
         self._scroll_animation = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
         self._scroll_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
 
@@ -37,36 +38,47 @@ class TeleprompterView(QTextBrowser):
         self.tokens = tokens
         self.current_index = -1
         self.progress_index = -1
+        self.painted_progress_index = -1
         self.setHtml(self._build_document_html())
         self._resolve_document_positions()
         self.highlight_word(-1)
         self.verticalScrollBar().setValue(0)
 
     def apply_settings(self, settings: AppSettings) -> None:
+        current_index = self.current_index
+        progress_index = self.progress_index
         self.settings = settings
         if self.raw_html:
             self.setHtml(self._build_document_html())
             self._resolve_document_positions()
-            self.highlight_word(self.current_index)
+            self.current_index = -1
+            self.progress_index = -1
+            self.painted_progress_index = -1
+            if progress_index >= 0:
+                self._apply_progress_format(0, progress_index)
+                self.progress_index = progress_index
+                self.painted_progress_index = progress_index
+            self._show_current_word(current_index, scroll=False)
 
     def highlight_word(self, index: int, confidence: float | None = None) -> None:
         if index < 0:
+            self._clear_progress_format()
             self.current_index = -1
             self.progress_index = -1
+            self.painted_progress_index = -1
             self.setExtraSelections([])
             return
 
         self.current_index = index
-        self.progress_index = max(self.progress_index, index)
-        selections: list[QTextEdit.ExtraSelection] = []
+        if index > self.progress_index:
+            start = self.progress_index + 1
+            self.progress_index = index
+            self._apply_progress_format(start, index)
 
-        if 0 <= self.progress_index < len(self.tokens):
-            progress_cursor = self._cursor_for_token_range(0, self.progress_index)
-            if not progress_cursor.isNull():
-                progress_selection = QTextEdit.ExtraSelection()
-                progress_selection.cursor = progress_cursor
-                progress_selection.format.setBackground(self._progress_color())
-                selections.append(progress_selection)
+        self._show_current_word(index, scroll=True)
+
+    def _show_current_word(self, index: int, scroll: bool) -> None:
+        selections: list[QTextEdit.ExtraSelection] = []
 
         if 0 <= index < len(self.tokens):
             token = self.tokens[index]
@@ -78,9 +90,33 @@ class TeleprompterView(QTextBrowser):
                 selection.format.setForeground(QColor(self.settings.highlight_text_color))
                 selections.append(selection)
 
-                self._center_cursor(cursor)
+                if scroll:
+                    self._center_cursor(cursor)
 
         self.setExtraSelections(selections)
+        self.viewport().update()
+
+    def _apply_progress_format(self, start_index: int, end_index: int) -> None:
+        if end_index <= self.painted_progress_index:
+            return
+
+        start_index = max(start_index, self.painted_progress_index + 1)
+        cursor = self._cursor_for_token_range(start_index, end_index)
+        if cursor.isNull():
+            return
+
+        progress_format = QTextCharFormat()
+        progress_format.setBackground(self._progress_color())
+        cursor.mergeCharFormat(progress_format)
+        self.painted_progress_index = end_index
+
+    def _clear_progress_format(self) -> None:
+        if self.painted_progress_index < 0 or not self.raw_html:
+            return
+        scroll_position = self.verticalScrollBar().value()
+        self.setHtml(self._build_document_html())
+        self._resolve_document_positions()
+        self.verticalScrollBar().setValue(scroll_position)
 
     def _cursor_for_token(self, token: Token) -> QTextCursor:
         return self._cursor_for_token_range(token.index, token.index)
@@ -116,7 +152,7 @@ class TeleprompterView(QTextBrowser):
         target = scroll_bar.value() + rect.center().y() - (self.viewport().height() // 2)
         target = max(scroll_bar.minimum(), min(scroll_bar.maximum(), target))
 
-        duration = max(45, 520 - (self.settings.scroll_speed * 5))
+        duration = max(20, 220 - (self.settings.scroll_speed * 2))
         self._scroll_animation.stop()
         self._scroll_animation.setDuration(duration)
         self._scroll_animation.setStartValue(scroll_bar.value())

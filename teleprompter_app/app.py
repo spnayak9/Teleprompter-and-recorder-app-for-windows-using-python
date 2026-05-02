@@ -135,6 +135,7 @@ class TeleprompterController(QObject):
             device_index=self.settings.microphone_index,
             sample_rate=self.settings.sample_rate,
             block_size=self.settings.audio_block_size,
+            grammar=self._build_script_grammar(),
         )
         self.recognizer.start(
             on_result=self.recognition_bridge.result_received.emit,
@@ -172,6 +173,21 @@ class TeleprompterController(QObject):
     def handle_recognition_error(self, message: str) -> None:
         self.stop_recognition()
         QMessageBox.warning(self.window, "Speech recognition unavailable", message)
+
+    def _build_script_grammar(self) -> list[str]:
+        words: list[str] = []
+        seen: set[str] = set()
+        for token in self.aligner.tokens:
+            if not token.normalized or token.normalized in seen:
+                continue
+            seen.add(token.normalized)
+            words.append(token.normalized)
+            if len(words) >= 2500:
+                break
+
+        if words:
+            words.append("[unk]")
+        return words
 
     def shutdown(self) -> None:
         self.stop_recognition()

@@ -30,11 +30,15 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         device_index: int | None,
         sample_rate: int = 16000,
         block_size: int = 4000,
+        grammar: list[str] | None = None,
     ) -> None:
         self.model_path = model_path
         self.device_index = device_index
         self.sample_rate = sample_rate
-        self.block_size = min(block_size, max(800, sample_rate // 8))
+        min_block = max(320, sample_rate // 50)
+        max_block = max(min_block, sample_rate // 20)
+        self.block_size = max(min_block, min(block_size, max_block))
+        self.grammar = grammar or []
         self._stop_event = Event()
         self._thread: Thread | None = None
         self._stream: AudioStream | None = None
@@ -95,10 +99,10 @@ class VoskSpeechRecognizer(SpeechRecognizer):
                 raise RuntimeError("Speech recognition requires the 'vosk' package.") from exc
 
             if on_status:
-                on_status("Loading Vosk model...")
+                on_status(self._model_status_message())
 
             model = Model(str(self.model_path))
-            recognizer = KaldiRecognizer(model, self.sample_rate)
+            recognizer = self._create_recognizer(KaldiRecognizer, model)
             recognizer.SetWords(True)
             if hasattr(recognizer, "SetPartialWords"):
                 recognizer.SetPartialWords(True)
@@ -111,7 +115,8 @@ class VoskSpeechRecognizer(SpeechRecognizer):
             self._stream.start()
 
             if on_status:
-                on_status("Listening...")
+                mode = "script grammar" if self.grammar else "full model"
+                on_status(f"Listening with {self.block_size} sample chunks ({mode})...")
 
             for chunk in self._stream.chunks(self._stop_event):
                 if recognizer.AcceptWaveform(chunk):
@@ -169,6 +174,33 @@ class VoskSpeechRecognizer(SpeechRecognizer):
             words = [RecognizedWord(word=word, is_final=is_final) for word in text.split()]
 
         return RecognitionResult(text=text, words=words, is_final=is_final)
+
+    def _create_recognizer(self, recognizer_class, model):  # noqa: ANN001
+        if not self.grammar:
+            return recognizer_class(model, self.sample_rate)
+
+        try:
+            return recognizer_class(model, self.sample_rate, json.dumps(self.grammar))
+        except Exception:
+            logger.exception("Could not create Vosk grammar recognizer; falling back to full model")
+            return recognizer_class(model, self.sample_rate)
+
+    def _model_status_message(self) -> str:
+        size_mb = self._model_size_mb()
+        model_name = self.model_path.name
+        if "lgraph" in model_name.lower() or size_mb >= 150:
+            return (
+                f"Loading large Vosk model ({model_name}, {size_mb:.0f} MB). "
+                "Using script grammar to reduce latency."
+            )
+        return f"Loading Vosk model ({model_name}, {size_mb:.0f} MB)..."
+
+    def _model_size_mb(self) -> float:
+        try:
+            size = sum(path.stat().st_size for path in self.model_path.rglob("*") if path.is_file())
+        except OSError:
+            return 0.0
+        return size / (1024 * 1024)
 
     def _new_words_after_partial(
         self,

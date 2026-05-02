@@ -20,7 +20,7 @@ class AudioStream:
         self.sample_rate = sample_rate
         self.block_size = block_size
         self.channels = channels
-        self._queue: queue.Queue[bytes] = queue.Queue(maxsize=20)
+        self._queue: queue.Queue[bytes] = queue.Queue(maxsize=4)
         self._stream = None
         self.last_status: str | None = None
 
@@ -49,11 +49,12 @@ class AudioStream:
             device=self.device_index,
             dtype="int16",
             channels=self.channels,
+            latency="low",
             callback=callback,
         )
         self._stream.start()
 
-    def read(self, timeout: float = 0.1) -> bytes | None:
+    def read(self, timeout: float = 0.02) -> bytes | None:
         try:
             return self._queue.get(timeout=timeout)
         except queue.Empty:
@@ -61,7 +62,7 @@ class AudioStream:
 
     def chunks(self, stop_event: Event):
         while not stop_event.is_set():
-            chunk = self.read(timeout=0.1)
+            chunk = self.read(timeout=0.02)
             if chunk:
                 yield chunk
 
