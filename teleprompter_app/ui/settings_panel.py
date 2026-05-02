@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from teleprompter_app.audio.mic_manager import MicrophoneDevice
 from teleprompter_app.core.parser import InputType
 from teleprompter_app.recording.audio_config import RecordingFormat
+from teleprompter_app.recording.audio_config import SUPPORTED_SAMPLE_RATES, BitDepth, ChannelMode
 from teleprompter_app.utils.config import AppSettings
 
 
@@ -44,6 +45,7 @@ class SettingsPanel(QWidget):
     def __init__(self, settings: AppSettings, parent=None) -> None:  # noqa: ANN001
         super().__init__(parent)
         self.settings = settings
+        self._devices: list[MicrophoneDevice] = []
         self._building = False
         self._build_ui()
         self.apply_settings(settings)
@@ -188,6 +190,7 @@ class SettingsPanel(QWidget):
         self.scroll_speed.valueChanged.connect(lambda _value: self._emit_settings())
         self.input_mode.currentIndexChanged.connect(lambda _index: self._emit_settings())
         self.microphone.currentIndexChanged.connect(lambda _index: self._emit_settings())
+        self.microphone.currentIndexChanged.connect(lambda _index: self._on_microphone_selection_changed())
         self.model_path.editingFinished.connect(self._emit_settings)
         self.recording_format.currentIndexChanged.connect(lambda _index: self._emit_settings())
         self.recording_sample_rate.currentIndexChanged.connect(lambda _index: self._emit_settings())
@@ -225,6 +228,7 @@ class SettingsPanel(QWidget):
 
     def set_microphones(self, devices: list[MicrophoneDevice], selected_index: int | None) -> None:
         self._building = True
+        self._devices = devices
         self.microphone.clear()
         if not devices:
             self.microphone.addItem("No microphones found", -1)
@@ -235,7 +239,98 @@ class SettingsPanel(QWidget):
                 self.microphone.addItem(device.label, device.index)
             selected = self.microphone.findData(selected_index)
             self.microphone.setCurrentIndex(selected if selected >= 0 else 0)
+            # Update recording option controls based on the selected device
+            cur_index = self.microphone.currentIndex()
+            if cur_index >= 0:
+                device_index = self.microphone.currentData()
+                for dev in devices:
+                    if dev.index == device_index:
+                        self._update_recording_options_for_device(dev)
+                        break
         self._building = False
+
+    def _on_microphone_selection_changed(self) -> None:
+        if self._building:
+            return
+        idx = self.microphone.currentIndex()
+        if idx < 0:
+            return
+        device_index = self.microphone.currentData()
+        for dev in getattr(self, "_devices", []):
+            if dev.index == device_index:
+                self._update_recording_options_for_device(dev)
+                break
+
+    def _update_recording_options_for_device(self, device: MicrophoneDevice) -> None:
+        """Probe a device and populate sample rate / bit depth / channel controls.
+
+        This attempts to use sounddevice.check_input_settings to validate common
+        combinations. If sounddevice is unavailable or probing fails, fall back
+        to reasonable defaults derived from the device's reported properties.
+        """
+        # Build candidate options
+        sample_rates = list(SUPPORTED_SAMPLE_RATES)
+        bit_depths = [int(BitDepth.PCM_16), int(BitDepth.PCM_24)]
+        channels = [1]
+        if device.max_input_channels >= 2:
+            channels.append(2)
+
+        # Try probing with sounddevice where possible (non-blocking checks)
+        try:
+            import sounddevice as sd
+
+            available_rates: list[int] = []
+            for rate in sample_rates:
+                try:
+                    sd.check_input_settings(device=device.index, samplerate=rate, channels=1)
+                    available_rates.append(rate)
+                except Exception:
+                    # try stereo if mono failed but device supports stereo
+                    if device.max_input_channels >= 2:
+                        try:
+                            sd.check_input_settings(device=device.index, samplerate=rate, channels=2)
+                            available_rates.append(rate)
+                        except Exception:
+                            pass
+
+            if available_rates:
+                sample_rates = sorted(set(available_rates), reverse=True)
+
+            # Bit depth probing
+            available_bits: list[int] = []
+            for bit in bit_depths:
+                dtype = "int24" if bit == 24 else "int16"
+                try:
+                    sd.check_input_settings(device=device.index, samplerate=sample_rates[0], channels=1, dtype=dtype)
+                    available_bits.append(bit)
+                except Exception:
+                    # try stereo if mono fails
+                    if device.max_input_channels >= 2:
+                        try:
+                            sd.check_input_settings(device=device.index, samplerate=sample_rates[0], channels=2, dtype=dtype)
+                            available_bits.append(bit)
+                        except Exception:
+                            pass
+
+            if available_bits:
+                bit_depths = available_bits
+        except Exception:
+            # If probing fails, fall back to device defaults
+            sample_rates = [device.default_sample_rate] + [r for r in sample_rates if r != device.default_sample_rate]
+
+        # Populate combos
+        self.recording_sample_rate.clear()
+        for rate in sample_rates:
+            self.recording_sample_rate.addItem(f"{rate} Hz", rate)
+
+        self.recording_bit_depth.clear()
+        for bit in bit_depths:
+            self.recording_bit_depth.addItem(f"{bit}-bit PCM", bit)
+
+        self.recording_channels.clear()
+        for ch in channels:
+            label = "Mono" if ch == 1 else "Stereo"
+            self.recording_channels.addItem(label, ch)
 
     def set_listening(self, listening: bool) -> None:
         self.start_button.setEnabled(not listening)
