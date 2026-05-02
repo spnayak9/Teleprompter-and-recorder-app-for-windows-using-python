@@ -17,7 +17,7 @@ class MicrophoneDevice:
 
     @property
     def label(self) -> str:
-        return f"{self.name} ({self.host_api})"
+        return f"{self.name} ({self.host_api}, {self.default_sample_rate} Hz)"
 
 
 class MicrophoneManager:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import audioop
 import json
 import logging
 from pathlib import Path
@@ -19,6 +20,32 @@ from teleprompter_app.speech.recognizer import (
 from teleprompter_app.core.tokenizer import normalize_word
 
 logger = logging.getLogger(__name__)
+
+
+class Pcm16Resampler:
+    """Small stateful PCM16 mono resampler for device rates that are not 16 kHz."""
+
+    def __init__(self, source_rate: int, target_rate: int) -> None:
+        self.source_rate = source_rate
+        self.target_rate = target_rate
+        self._state = None
+
+    @property
+    def is_needed(self) -> bool:
+        return self.source_rate != self.target_rate
+
+    def convert(self, chunk: bytes) -> bytes:
+        if not self.is_needed:
+            return chunk
+        converted, self._state = audioop.ratecv(
+            chunk,
+            2,
+            1,
+            self.source_rate,
+            self.target_rate,
+            self._state,
+        )
+        return converted
 
 
 class VoskSpeechRecognizer(SpeechRecognizer):
@@ -98,6 +125,26 @@ class VoskSpeechRecognizer(SpeechRecognizer):
             except ImportError as exc:
                 raise RuntimeError("Speech recognition requires the 'vosk' package.") from exc
 
+            self._stream = AudioStream(
+                device_index=self.device_index,
+                sample_rate=self.sample_rate,
+                block_size=self.block_size,
+            )
+            opened_device = self._stream.start()
+            resampler = Pcm16Resampler(opened_device.sample_rate, self.sample_rate)
+
+            if on_status:
+                fallback_note = f" {self._stream.last_status}" if self._stream.last_status else ""
+                resample_note = (
+                    f" Resampling {opened_device.sample_rate} Hz to {self.sample_rate} Hz for Vosk."
+                    if resampler.is_needed
+                    else ""
+                )
+                on_status(
+                    f"Microphone ready: {opened_device.name} ({opened_device.host_api}), "
+                    f"{opened_device.sample_rate} Hz.{resample_note}{fallback_note}"
+                )
+
             if on_status:
                 on_status(self._model_status_message())
 
@@ -107,18 +154,19 @@ class VoskSpeechRecognizer(SpeechRecognizer):
             if hasattr(recognizer, "SetPartialWords"):
                 recognizer.SetPartialWords(True)
 
-            self._stream = AudioStream(
-                device_index=self.device_index,
-                sample_rate=self.sample_rate,
-                block_size=self.block_size,
-            )
-            self._stream.start()
-
             if on_status:
-                mode = "script grammar" if self.grammar else "full model"
-                on_status(f"Listening with {self.block_size} sample chunks ({mode})...")
+                mode = "script grammar" if self._uses_runtime_grammar() else "full model"
+                chunk_label = (
+                    "PortAudio-selected buffer"
+                    if opened_device.block_size == 0
+                    else f"{opened_device.block_size} sample chunks"
+                )
+                on_status(f"Listening with {chunk_label} ({mode})...")
 
             for chunk in self._stream.chunks(self._stop_event):
+                chunk = resampler.convert(chunk)
+                if not chunk:
+                    continue
                 if recognizer.AcceptWaveform(chunk):
                     payload = json.loads(recognizer.Result())
                     result = self._payload_to_result(payload, is_final=True)
@@ -176,7 +224,7 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         return RecognitionResult(text=text, words=words, is_final=is_final)
 
     def _create_recognizer(self, recognizer_class, model):  # noqa: ANN001
-        if not self.grammar:
+        if not self._uses_runtime_grammar():
             return recognizer_class(model, self.sample_rate)
 
         try:
@@ -188,12 +236,13 @@ class VoskSpeechRecognizer(SpeechRecognizer):
     def _model_status_message(self) -> str:
         size_mb = self._model_size_mb()
         model_name = self.model_path.name
+        grammar_message = "Using script grammar to reduce latency." if self._uses_runtime_grammar() else "Using full model graph."
         if "lgraph" in model_name.lower() or size_mb >= 150:
             return (
                 f"Loading large Vosk model ({model_name}, {size_mb:.0f} MB). "
-                "Using script grammar to reduce latency."
+                f"{grammar_message}"
             )
-        return f"Loading Vosk model ({model_name}, {size_mb:.0f} MB)..."
+        return f"Loading Vosk model ({model_name}, {size_mb:.0f} MB). {grammar_message}"
 
     def _model_size_mb(self) -> float:
         try:
@@ -216,3 +265,10 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         if len(prefix) > len(words):
             return False
         return words[: len(prefix)] == prefix
+
+    def _uses_runtime_grammar(self) -> bool:
+        return bool(self.grammar and self._model_supports_runtime_grammar())
+
+    def _model_supports_runtime_grammar(self) -> bool:
+        graph_dir = self.model_path / "graph"
+        return (graph_dir / "HCLr.fst").exists() and (graph_dir / "Gr.fst").exists()
