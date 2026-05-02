@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QSlider,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from teleprompter_app.audio.mic_manager import MicrophoneDevice
 from teleprompter_app.core.parser import InputType
+from teleprompter_app.recording.audio_config import RecordingFormat
 from teleprompter_app.utils.config import AppSettings
 
 
@@ -35,6 +37,9 @@ class SettingsPanel(QWidget):
     refresh_microphones_requested = Signal()
     start_requested = Signal()
     stop_requested = Signal()
+    start_recording_requested = Signal()
+    stop_recording_requested = Signal()
+    select_recording_dir_requested = Signal()
 
     def __init__(self, settings: AppSettings, parent=None) -> None:  # noqa: ANN001
         super().__init__(parent)
@@ -111,6 +116,52 @@ class SettingsPanel(QWidget):
         audio_form.addRow("Microphone", mic_row)
         audio_form.addRow("Vosk model", model_row)
 
+        recording_group = QGroupBox("Recording")
+        recording_form = QFormLayout(recording_group)
+
+        self.recording_dir = QLineEdit()
+        self.recording_dir.setReadOnly(True)
+        self.recording_dir.setPlaceholderText("Choose project folder before recording")
+        self.select_recording_dir = QPushButton("Select")
+        recording_dir_row = QHBoxLayout()
+        recording_dir_row.addWidget(self.recording_dir, 1)
+        recording_dir_row.addWidget(self.select_recording_dir)
+
+        self.recording_format = QComboBox()
+        self.recording_format.addItem("Both WAV + FLAC", RecordingFormat.BOTH.value)
+        self.recording_format.addItem("WAV only", RecordingFormat.WAV.value)
+        self.recording_format.addItem("FLAC only", RecordingFormat.FLAC.value)
+
+        self.recording_sample_rate = QComboBox()
+        self.recording_sample_rate.addItem("48000 Hz", 48000)
+        self.recording_sample_rate.addItem("44100 Hz", 44100)
+
+        self.recording_bit_depth = QComboBox()
+        self.recording_bit_depth.addItem("16-bit PCM", 16)
+        self.recording_bit_depth.addItem("24-bit PCM", 24)
+
+        self.recording_channels = QComboBox()
+        self.recording_channels.addItem("Mono", 1)
+        self.recording_channels.addItem("Stereo", 2)
+
+        recording_controls = QHBoxLayout()
+        self.start_recording_button = QPushButton("Start Recording")
+        self.stop_recording_button = QPushButton("Stop Recording")
+        self.stop_recording_button.setEnabled(False)
+        recording_controls.addWidget(self.start_recording_button)
+        recording_controls.addWidget(self.stop_recording_button)
+
+        self.recording_status = QLabel("Idle")
+        self.recording_status.setMinimumWidth(160)
+
+        recording_form.addRow("Project", recording_dir_row)
+        recording_form.addRow("Format", self.recording_format)
+        recording_form.addRow("Sample rate", self.recording_sample_rate)
+        recording_form.addRow("Bit depth", self.recording_bit_depth)
+        recording_form.addRow("Channels", self.recording_channels)
+        recording_form.addRow("Status", self.recording_status)
+        recording_form.addRow("Controls", recording_controls)
+
         controls = QGroupBox("Session")
         controls_layout = QHBoxLayout(controls)
         self.start_button = QPushButton("Start Listening")
@@ -123,6 +174,7 @@ class SettingsPanel(QWidget):
         root.addWidget(render_group)
         root.addWidget(input_group)
         root.addWidget(audio_group)
+        root.addWidget(recording_group)
         root.addWidget(controls)
         root.addStretch(1)
 
@@ -137,10 +189,17 @@ class SettingsPanel(QWidget):
         self.input_mode.currentIndexChanged.connect(lambda _index: self._emit_settings())
         self.microphone.currentIndexChanged.connect(lambda _index: self._emit_settings())
         self.model_path.editingFinished.connect(self._emit_settings)
+        self.recording_format.currentIndexChanged.connect(lambda _index: self._emit_settings())
+        self.recording_sample_rate.currentIndexChanged.connect(lambda _index: self._emit_settings())
+        self.recording_bit_depth.currentIndexChanged.connect(lambda _index: self._emit_settings())
+        self.recording_channels.currentIndexChanged.connect(lambda _index: self._emit_settings())
         self.browse_model.clicked.connect(lambda _checked=False: self._browse_model())
         self.refresh_mics.clicked.connect(lambda _checked=False: self.refresh_microphones_requested.emit())
         self.start_button.clicked.connect(lambda _checked=False: self.start_requested.emit())
         self.stop_button.clicked.connect(lambda _checked=False: self.stop_requested.emit())
+        self.select_recording_dir.clicked.connect(lambda _checked=False: self.select_recording_dir_requested.emit())
+        self.start_recording_button.clicked.connect(lambda _checked=False: self.start_recording_requested.emit())
+        self.stop_recording_button.clicked.connect(lambda _checked=False: self.stop_recording_requested.emit())
 
     def apply_settings(self, settings: AppSettings) -> None:
         self._building = True
@@ -152,6 +211,11 @@ class SettingsPanel(QWidget):
         self.underline.setChecked(settings.underline)
         self.scroll_speed.setValue(settings.scroll_speed)
         self.model_path.setText(settings.vosk_model_path)
+        self.recording_dir.setText(settings.recording_project_dir)
+        self._set_combo_by_data(self.recording_format, settings.recording_format)
+        self._set_combo_by_data(self.recording_sample_rate, settings.recording_sample_rate)
+        self._set_combo_by_data(self.recording_bit_depth, settings.recording_bit_depth)
+        self._set_combo_by_data(self.recording_channels, settings.recording_channels)
         self._set_button_color(self.text_color_button, settings.text_color, "Text color")
         self._set_button_color(self.highlight_color_button, settings.highlight_color, "Highlight color")
 
@@ -177,6 +241,19 @@ class SettingsPanel(QWidget):
         self.start_button.setEnabled(not listening)
         self.stop_button.setEnabled(listening)
 
+    def set_recording(self, recording: bool, status: str = "") -> None:
+        self.start_recording_button.setEnabled(not recording)
+        self.stop_recording_button.setEnabled(recording)
+        if status:
+            self.recording_status.setText(status)
+
+    def set_recording_status(self, status: str) -> None:
+        self.recording_status.setText(status)
+
+    def set_recording_directory(self, directory: str) -> None:
+        self.recording_dir.setText(directory)
+        self._emit_settings()
+
     def current_input_mode(self) -> str:
         return str(self.input_mode.currentData() or "")
 
@@ -197,6 +274,11 @@ class SettingsPanel(QWidget):
                 "input_mode": self.current_input_mode(),
                 "microphone_index": int(microphone_index) if microphone_index is not None else -1,
                 "vosk_model_path": self.model_path.text().strip(),
+                "recording_project_dir": self.recording_dir.text().strip(),
+                "recording_format": str(self.recording_format.currentData()),
+                "recording_sample_rate": int(self.recording_sample_rate.currentData()),
+                "recording_bit_depth": int(self.recording_bit_depth.currentData()),
+                "recording_channels": int(self.recording_channels.currentData()),
             }
         )
 
@@ -229,6 +311,10 @@ class SettingsPanel(QWidget):
             f"QPushButton {{ background: {color}; color: {self._contrast_color(color)}; padding: 6px; }}"
         )
         button.setAccessibleName(label)
+
+    def _set_combo_by_data(self, combo: QComboBox, value: object) -> None:
+        index = combo.findData(value)
+        combo.setCurrentIndex(index if index >= 0 else 0)
 
     def _contrast_color(self, color: str) -> str:
         qcolor = QColor(color)

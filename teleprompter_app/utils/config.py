@@ -27,6 +27,11 @@ class AppSettings:
     vosk_model_path: str = os.environ.get("VOSK_MODEL_PATH", "models/vosk-model-small-en-us-0.15")
     sample_rate: int = 16000
     audio_block_size: int = 800
+    recording_project_dir: str = ""
+    recording_format: str = "both"
+    recording_sample_rate: int = 48000
+    recording_bit_depth: int = 16
+    recording_channels: int = 1
 
     def updated(self, values: dict[str, Any]) -> "AppSettings":
         valid = {key: value for key, value in values.items() if hasattr(self, key)}

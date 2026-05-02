@@ -22,6 +22,9 @@ class MainWindow(QMainWindow):
     rewind_requested = Signal()
     settings_changed = Signal(dict)
     microphones_refresh_requested = Signal()
+    start_recording_requested = Signal()
+    stop_recording_requested = Signal()
+    select_recording_dir_requested = Signal()
 
     def __init__(self, settings: AppSettings) -> None:
         super().__init__()
@@ -72,6 +75,9 @@ class MainWindow(QMainWindow):
         self.settings_panel.stop_requested.connect(self.stop_requested.emit)
         self.settings_panel.settings_changed.connect(self.settings_changed.emit)
         self.settings_panel.refresh_microphones_requested.connect(self.microphones_refresh_requested.emit)
+        self.settings_panel.start_recording_requested.connect(self.start_recording_requested.emit)
+        self.settings_panel.stop_recording_requested.connect(self.stop_recording_requested.emit)
+        self.settings_panel.select_recording_dir_requested.connect(self.select_recording_dir_requested.emit)
 
     def _choose_script(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -104,6 +110,24 @@ class MainWindow(QMainWindow):
         self.start_action.setEnabled(not listening)
         self.stop_action.setEnabled(listening)
         self.settings_panel.set_listening(listening)
+
+    def set_recording(self, recording: bool, status: str = "") -> None:
+        self.settings_panel.set_recording(recording, status)
+
+    def set_recording_status(self, status: str) -> None:
+        self.settings_panel.set_recording_status(status)
+
+    def set_recording_directory(self, directory: str) -> None:
+        self.settings_panel.set_recording_directory(directory)
+
+    def choose_project_folder(self, initial_directory: str = "") -> str:
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select or create recording project folder",
+            initial_directory,
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        return directory
 
     def set_status(self, message: str) -> None:
         self.statusBar().showMessage(message)

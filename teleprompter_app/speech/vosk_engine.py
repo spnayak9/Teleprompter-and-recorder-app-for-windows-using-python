@@ -5,6 +5,7 @@ from __future__ import annotations
 import audioop
 import json
 import logging
+import time
 from pathlib import Path
 from threading import Event, Thread
 
@@ -70,6 +71,7 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         self._thread: Thread | None = None
         self._stream: AudioStream | None = None
         self._running = False
+        self.audio_started_at: float | None = None
 
     @property
     def is_running(self) -> bool:
@@ -103,6 +105,7 @@ class VoskSpeechRecognizer(SpeechRecognizer):
             self._thread.join(timeout=1.5)
         self._thread = None
         self._running = False
+        self.audio_started_at = None
 
     def _run(
         self,
@@ -131,6 +134,7 @@ class VoskSpeechRecognizer(SpeechRecognizer):
                 block_size=self.block_size,
             )
             opened_device = self._stream.start()
+            self.audio_started_at = time.monotonic()
             resampler = Pcm16Resampler(opened_device.sample_rate, self.sample_rate)
 
             if on_status:
@@ -199,6 +203,7 @@ class VoskSpeechRecognizer(SpeechRecognizer):
                 self._stream.stop()
                 self._stream = None
             self._running = False
+            self.audio_started_at = None
             if on_status and not self._stop_event.is_set():
                 on_status("Recognition stopped")
 

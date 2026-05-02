@@ -22,3 +22,15 @@ python -m teleprompter_app.main
 ```
 
 The app supports `.txt`, `.md`, `.markdown`, `.html`, and `.htm` scripts. Every script is normalized to HTML, tokenized word by word, rendered in a scrollable teleprompter view, and aligned against streaming speech recognition.
+
+## Lossless Recording
+
+The Recording panel writes raw microphone PCM directly to disk with no filtering, normalization, AGC, noise suppression, or sample-rate conversion in the recording path.
+
+- Choose a project folder when starting a recording.
+- The app creates `audio/` and `subtitles/` folders automatically.
+- WAV is raw PCM.
+- FLAC is lossless compression of the same PCM stream.
+- Subtitle `.srt` and transcript `.txt` files are generated from the existing speech recognition pipeline.
+
+For bit-perfect capture, disable Windows/driver microphone enhancements manually when your device exposes them.

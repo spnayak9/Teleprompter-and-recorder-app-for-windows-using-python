@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Iterable
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from teleprompter_app.audio.mic_manager import MicrophoneManager
@@ -14,6 +15,10 @@ from teleprompter_app.core.alignment import AlignmentEngine, AlignmentMatch
 from teleprompter_app.core.parser import InputType, ScriptParser
 from teleprompter_app.core.state_manager import StateManager
 from teleprompter_app.core.tokenizer import ScriptTokenizer
+from teleprompter_app.recording.audio_config import RecordingConfig
+from teleprompter_app.recording.audio_recorder import LosslessAudioRecorder
+from teleprompter_app.recording.file_manager import RecordingFileManager, RecordingFiles
+from teleprompter_app.recording.subtitle_generator import SubtitleGenerator
 from teleprompter_app.speech.recognizer import RecognitionResult
 from teleprompter_app.speech.vosk_engine import VoskSpeechRecognizer
 from teleprompter_app.ui.main_window import MainWindow
@@ -49,10 +54,18 @@ class TeleprompterController(QObject):
         self.aligner = AlignmentEngine()
         self.state = StateManager()
         self.microphones = MicrophoneManager()
+        self.recording_files = RecordingFileManager()
+        self.recorder: LosslessAudioRecorder | None = None
+        self.current_recording_files: RecordingFiles | None = None
+        self.subtitle_generator: SubtitleGenerator | None = None
+        self.recording_started_at: float | None = None
 
         self.window = MainWindow(self.settings)
         self.recognition_bridge = RecognitionBridge()
         self.recognizer: VoskSpeechRecognizer | None = None
+        self.recognizer_started_at: float | None = None
+        self.recording_timer = QTimer(self)
+        self.recording_timer.setInterval(250)
 
         self._connect_signals()
         self.refresh_microphones()
@@ -68,10 +81,14 @@ class TeleprompterController(QObject):
         self.window.rewind_requested.connect(self.rewind_script)
         self.window.settings_changed.connect(self.apply_settings)
         self.window.microphones_refresh_requested.connect(self.refresh_microphones)
+        self.window.start_recording_requested.connect(self.start_recording)
+        self.window.stop_recording_requested.connect(self.stop_recording)
+        self.window.select_recording_dir_requested.connect(self.select_recording_directory)
 
         self.recognition_bridge.result_received.connect(self.handle_recognition_result)
         self.recognition_bridge.status_changed.connect(self.window.set_status)
         self.recognition_bridge.error_occurred.connect(self.handle_recognition_error)
+        self.recording_timer.timeout.connect(self.update_recording_duration)
 
         self.qt_app.aboutToQuit.connect(self.shutdown)
 
@@ -137,6 +154,7 @@ class TeleprompterController(QObject):
             block_size=self.settings.audio_block_size,
             grammar=self._build_script_grammar(),
         )
+        self.recognizer_started_at = time.monotonic()
         self.recognizer.start(
             on_result=self.recognition_bridge.result_received.emit,
             on_status=self.recognition_bridge.status_changed.emit,
@@ -149,11 +167,13 @@ class TeleprompterController(QObject):
         if self.recognizer:
             self.recognizer.stop()
             self.recognizer = None
+        self.recognizer_started_at = None
         self.state.set_listening(False)
         self.window.set_listening(False)
         self.window.set_status("Recognition stopped")
 
     def handle_recognition_result(self, result: RecognitionResult) -> None:
+        self.capture_subtitles(result)
         matches = self.aligner.align_words(result.words)
         self._apply_matches(matches, result)
 
@@ -174,6 +194,112 @@ class TeleprompterController(QObject):
         self.stop_recognition()
         QMessageBox.warning(self.window, "Speech recognition unavailable", message)
 
+    def select_recording_directory(self) -> None:
+        directory = self.window.choose_project_folder(self.settings.recording_project_dir)
+        if not directory:
+            return
+        self.apply_settings({"recording_project_dir": directory})
+        self.window.set_recording_directory(directory)
+
+    def start_recording(self) -> None:
+        if self.recorder and self.recorder.is_running:
+            self.window.set_recording_status("Already recording")
+            return
+
+        directory = self.window.choose_project_folder(self.settings.recording_project_dir)
+        if not directory:
+            self.window.set_recording_status("Recording cancelled")
+            return
+
+        self.apply_settings({"recording_project_dir": directory})
+        self.window.set_recording_directory(directory)
+
+        config = RecordingConfig(
+            sample_rate=self.settings.recording_sample_rate,
+            bit_depth=self.settings.recording_bit_depth,
+            channels=self.settings.recording_channels,
+            output_format=self.settings.recording_format,
+        )
+
+        try:
+            files = self.recording_files.prepare_session(Path(directory), config)
+            recorder = LosslessAudioRecorder()
+            recorder.start(
+                device_index=self.settings.microphone_index,
+                config=config,
+                files=files,
+            )
+        except Exception as exc:
+            logger.exception("Could not start recording")
+            self.window.set_recording(False, "Recording failed")
+            QMessageBox.critical(self.window, "Could not start recording", str(exc))
+            return
+
+        self.recorder = recorder
+        self.current_recording_files = files
+        self.subtitle_generator = SubtitleGenerator(files.srt_path, files.transcript_path)
+        self.recording_started_at = recorder.started_at or time.monotonic()
+        self.recording_timer.start()
+        self.window.set_recording(True, "Recording 00:00")
+        self.window.set_status(f"Recording raw audio to {files.audio_dir}")
+
+        if not (self.recognizer and self.recognizer.is_running):
+            self.start_recognition()
+
+    def stop_recording(self) -> None:
+        if not self.recorder:
+            self.window.set_recording(False, "Idle")
+            return
+
+        try:
+            result = self.recorder.stop()
+        except Exception as exc:
+            logger.exception("Could not stop recording cleanly")
+            QMessageBox.warning(self.window, "Recording error", str(exc))
+            result = None
+        finally:
+            self.recorder = None
+            self.recording_timer.stop()
+
+        if self.subtitle_generator is not None:
+            self.subtitle_generator.finish()
+            self.subtitle_generator = None
+
+        self.window.set_recording(False, "Saved")
+        self.recording_started_at = None
+
+        if self.current_recording_files is not None:
+            status = f"Recording saved in {self.current_recording_files.project_root}"
+            if result is not None and result.dropped_chunks:
+                status += f" ({result.dropped_chunks} audio buffers dropped)"
+            if result is not None and result.wav_flac_match is False:
+                status += " (WAV/FLAC verification failed)"
+            self.window.set_status(status)
+            self.current_recording_files = None
+
+    def update_recording_duration(self) -> None:
+        if self.recording_started_at is None:
+            return
+        elapsed = int(time.monotonic() - self.recording_started_at)
+        minutes, seconds = divmod(elapsed, 60)
+        self.window.set_recording_status(f"Recording {minutes:02}:{seconds:02}")
+
+    def capture_subtitles(self, result: RecognitionResult) -> None:
+        if self.subtitle_generator is None or self.recording_started_at is None:
+            return
+
+        recognizer_audio_started_at = (
+            self.recognizer.audio_started_at
+            if self.recognizer and self.recognizer.audio_started_at is not None
+            else self.recognizer_started_at
+        )
+        if recognizer_audio_started_at is None:
+            recognition_offset = 0.0
+        else:
+            recognition_offset = recognizer_audio_started_at - self.recording_started_at
+        fallback_elapsed = time.monotonic() - self.recording_started_at
+        self.subtitle_generator.add_result(result, recognition_offset, fallback_elapsed)
+
     def _build_script_grammar(self) -> list[str]:
         words: list[str] = []
         seen: set[str] = set()
@@ -190,5 +316,6 @@ class TeleprompterController(QObject):
         return words
 
     def shutdown(self) -> None:
+        self.stop_recording()
         self.stop_recognition()
         self.config.save(self.settings)
