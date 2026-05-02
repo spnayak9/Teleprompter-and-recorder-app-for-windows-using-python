@@ -1,0 +1,5 @@
+AI Teleprompter Demo
+
+Welcome to the real-time teleprompter. Open a script, choose a microphone, and start listening.
+
+Speak naturally. The highlighter follows the words it hears, even when the delivery skips ahead.
