@@ -173,8 +173,47 @@ class TeleprompterController(QObject):
         self.window.set_status("Recognition stopped")
 
     def handle_recognition_result(self, result: RecognitionResult) -> None:
-        self.capture_subtitles(result)
-        matches = self.aligner.align_words(result.words)
+        # Convert recognizer word timings to recording-relative times and
+        # align words one-by-one so we can attach token timestamps to the
+        # subtitle generator (script-based SRT) instead of raw recognizer text.
+        matches: list = []
+
+        recognizer_audio_started_at = (
+            self.recognizer.audio_started_at
+            if self.recognizer and self.recognizer.audio_started_at is not None
+            else self.recognizer_started_at
+        )
+        if recognizer_audio_started_at is None:
+            recognition_offset = 0.0
+        else:
+            recognition_offset = (
+                recognizer_audio_started_at - self.recording_started_at
+                if self.recording_started_at is not None
+                else 0.0
+            )
+        fallback_elapsed = time.monotonic() - self.recording_started_at if self.recording_started_at is not None else 0.0
+
+        if result.words:
+            for word in result.words:
+                match = self.aligner.align_word(word.word, word.confidence)
+                if match is not None:
+                    matches.append(match)
+                    # Attach script token timestamp to subtitle generator when recording
+                    if self.subtitle_generator is not None and self.recording_started_at is not None:
+                        start = None if word.start is None else max(0.0, word.start + recognition_offset)
+                        end = None if word.end is None else max(0.0, word.end + recognition_offset)
+                        if start is None:
+                            start = max(0.0, fallback_elapsed)
+                        if end is None or end <= start:
+                            end = max(start + 0.05, fallback_elapsed)
+                        try:
+                            self.subtitle_generator.add_token_match(match.token_index, match.token_word, start, end)
+                        except Exception:
+                            logger.exception("Failed to add token match to subtitle generator")
+        else:
+            # No word-level timings — fall back to previous behavior
+            self.capture_subtitles(result)
+
         self._apply_matches(matches, result)
 
     def _apply_matches(self, matches: Iterable[AlignmentMatch], result: RecognitionResult) -> None:

@@ -33,7 +33,13 @@ class SubtitleGenerator:
         recognition_to_recording_offset: float,
         fallback_elapsed: float,
     ) -> None:
-        """Add recognized words without touching recorded audio."""
+        """Add recognized words without touching recorded audio.
+
+        NOTE: This method remains for backward compatibility. Prefer the
+        `add_token_match` API which maps script tokens (highlighted words)
+        to recording-relative timestamps so SRT contains the original script
+        text rather than raw recognizer output.
+        """
 
         if result.words:
             for word in result.words:
@@ -50,6 +56,22 @@ class SubtitleGenerator:
         text = result.text.strip()
         if text:
             self._add_segment(max(0.0, fallback_elapsed - 1.5), max(0.2, fallback_elapsed), text)
+
+    def add_token_match(self, token_index: int, token_text: str, start: float | None, end: float | None) -> None:
+        """Add a matched script token tied to recording-relative timestamps.
+
+        This records the script `token_text` with the given `start` and `end`
+        (both are recording-relative seconds). The generator groups nearby
+        tokens into subtitle segments so the resulting SRT maps the original
+        script text to the times it was highlighted.
+        """
+        if not token_text:
+            return
+
+        start_ts = start if start is not None else 0.0
+        end_ts = end if end is not None else max(start_ts + 0.05, 0.05)
+        # Use same grouping rules as _add_word but preserve full token text
+        self._add_word(token_text.strip(), start_ts, end_ts)
 
     def finish(self) -> None:
         if self._current is not None:
