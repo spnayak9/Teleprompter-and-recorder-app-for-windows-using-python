@@ -6,3 +6,23 @@ vosk>=0.3.45
 rapidfuzz>=3.6
 numpy>=1.24
 soundfile>=0.12
+# Core system profiling
+psutil==5.9.8
+py-cpuinfo==9.0.0
+
+
+
+# GPU detection (fallback, WMI is primary)
+gputil
+
+# Optional: OpenCV (only if you extend diagnostics / preview testing)
+opencv-python
+
+# Optional: FFmpeg wrapper (not required, subprocess used)
+ffmpeg-python
+
+# Windows system queries (optional enhancement)
+pywin32
+
+# Optional: JSON export / structured output
+orjson
