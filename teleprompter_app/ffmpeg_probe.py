@@ -125,8 +125,8 @@ class CameraMode:
 @dataclass
 class CameraProfile:
     name: str
-    device_path: str
-    opencv_index: int = -1
+    opencv_index: int
+    device_path: Optional[str] = None
     modes: List[CameraMode] = field(default_factory=list)
 
 
@@ -208,6 +208,8 @@ def probe_system(ffmpeg_path: Optional[str] = None, timeout: int = 8) -> SystemP
 
     Returns a SystemProbe object containing camera/audio profiles and ffmpeg capabilities.
     """
+    from teleprompter_app.camera_mapper import detect_cameras
+    
     sp = SystemProbe()
     try:
         ff = probe_ffmpeg(ffmpeg_path)
@@ -215,41 +217,63 @@ def probe_system(ffmpeg_path: Optional[str] = None, timeout: int = 8) -> SystemP
     except Exception:
         sp.ffmpeg = None
 
+    # Step 1: Detect cameras via OpenCV (Primary)
+    cv_cams = detect_cameras()
+    
+    # Step 2: Try to get FFmpeg device names for recording
     try:
         path = ffmpeg_path or ("ffmpeg" if shutil.which("ffmpeg") else None)
-        if not path:
-            return sp
-        out = _run_quiet([path, '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'], timeout=timeout)
-        devs = _parse_list_devices(out)
-        cams = []
-        for i, name in enumerate(devs.get('video', [])):
-            opts = _run_quiet([path, '-f', 'dshow', '-list_options', 'true', '-i', f'video={name}'], timeout=timeout)
-            modes = _parse_dshow_options(opts)
-            cams.append(CameraProfile(name=name, device_path=name, modes=modes, opencv_index=i))
-        auds = []
-        for name in devs.get('audio', []):
-            opts = _run_quiet([path, '-f', 'dshow', '-list_options', 'true', '-i', f'audio={name}'], timeout=timeout)
-            rates = set()
-            channels = set()
-            for ln in (opts or "").splitlines():
-                m = re.search(r'(\d{3,5})\s*Hz', ln)
-                if m:
-                    try:
-                        rates.add(int(m.group(1)))
-                    except Exception:
-                        pass
-                m2 = re.search(r'channels?=(\d+)', ln)
-                if m2:
-                    try:
-                        channels.add(int(m2.group(1)))
-                    except Exception:
-                        pass
-            auds.append(AudioProfile(name=name, device_path=name, sample_rates=rates, channels=channels))
-        sp.cameras = cams
-        sp.audios = auds
+        if path:
+            out = _run_quiet([path, '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'], timeout=timeout)
+            devs = _parse_list_devices(out)
+            ff_video_names = devs.get('video', [])
+            
+            final_cameras = []
+            for i, cv_cam in enumerate(cv_cams):
+                name = cv_cam['name']
+                idx = cv_cam['opencv_index']
+                
+                # Attempt to match with FFmpeg name by index
+                ff_name = ff_video_names[i] if i < len(ff_video_names) else None
+                
+                profile = CameraProfile(
+                    name=ff_name or name,
+                    opencv_index=idx,
+                    device_path=ff_name
+                )
+                
+                # If we have an FFmpeg name, probe it for modes
+                if ff_name:
+                    opts = _run_quiet([path, '-f', 'dshow', '-list_options', 'true', '-i', f'video={ff_name}'], timeout=timeout)
+                    profile.modes = _parse_dshow_options(opts)
+                
+                final_cameras.append(profile)
+            sp.cameras = final_cameras
+
+            # Audio discovery (FFmpeg based)
+            auds = []
+            for name in devs.get('audio', []):
+                opts = _run_quiet([path, '-f', 'dshow', '-list_options', 'true', '-i', f'audio={name}'], timeout=timeout)
+                rates = set()
+                channels = set()
+                for ln in (opts or "").splitlines():
+                    m = re.search(r'(\d{3,5})\s*Hz', ln)
+                    if m:
+                        try: rates.add(int(m.group(1)))
+                        except Exception: pass
+                    m2 = re.search(r'channels?=(\d+)', ln)
+                    if m2:
+                        try: channels.add(int(m2.group(1)))
+                        except Exception: pass
+                auds.append(AudioProfile(name=name, device_path=name, sample_rates=rates, channels=channels))
+            sp.audios = auds
+        else:
+            # Fallback if no ffmpeg: just use OpenCV cameras
+            sp.cameras = [CameraProfile(name=c['name'], opencv_index=c['opencv_index']) for c in cv_cams]
     except Exception:
-        # fail gracefully and return whatever we have
-        pass
+        # fail gracefully
+        if not sp.cameras:
+            sp.cameras = [CameraProfile(name=c['name'], opencv_index=c['opencv_index']) for c in cv_cams]
 
     return sp
 

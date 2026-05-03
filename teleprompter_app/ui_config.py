@@ -99,10 +99,10 @@ class ConfigDialog(QDialog):
 
         # populate device lists from passed profile
         try:
-            self.video_device.addItem("", "")
+            self.video_device.addItem("", None)
             if self._profile:
                 for cam in self._profile.cameras:
-                    self.video_device.addItem(cam.name, cam.name)
+                    self.video_device.addItem(cam.name, cam)
         except Exception:
             pass
 
@@ -131,9 +131,13 @@ class ConfigDialog(QDialog):
         # Pre-select video device if it exists in settings
         pref = getattr(self.settings, "video_device", None)
         if pref:
-            idx = self.video_device.findText(pref)
-            if idx >= 0:
-                self.video_device.setCurrentIndex(idx)
+            # find index by camera name
+            for i in range(self.video_device.count()):
+                cam = self.video_device.itemData(i)
+                if cam and hasattr(cam, 'name') and cam.name == pref:
+                    self.video_device.setCurrentIndex(i)
+                    break
+
         # Populate resolutions from system probe if available
         if self._ffmpeg_caps:
             self._on_ffmpeg_probed(self._ffmpeg_caps)
@@ -360,21 +364,22 @@ class ConfigDialog(QDialog):
         self._validate_selection()
 
     def _on_video_device_changed(self) -> None:
-        name = self.video_device.currentData()
+        cam = self.video_device.currentData()
         self.resolution.clear()
         self.resolution.addItem("", "")
         self.fps.clear()
         self.pixel_format.clear()
         self.video_codec.clear()
         
-        if not name or not self._system_probe or not self._system_probe.cameras:
-            return
-            
-        cam = next((c for c in self._system_probe.cameras if c.name == name), None)
-        if not cam:
+        if not cam or not hasattr(cam, 'modes'):
+            self._validate_selection()
             return
             
         res_set = {f"{m.width}x{m.height}" for m in cam.modes}
+        if not res_set:
+            # Fallback for cameras where FFmpeg mode probing failed
+            res_set = {"640x360", "1280x720", "1920x1080"}
+            
         for r in sorted(res_set, key=lambda x: int(x.split('x')[0]) * int(x.split('x')[1]), reverse=True):
             self.resolution.addItem(r, r)
             
@@ -382,21 +387,18 @@ class ConfigDialog(QDialog):
 
     def _on_resolution_changed(self) -> None:
         res = self.resolution.currentData()
-        name = self.video_device.currentData()
+        cam = self.video_device.currentData()
         self.fps.clear()
         self.pixel_format.clear()
         self.video_codec.clear()
         
-        if not res or not name or not self._system_probe:
+        if not res or not cam or not hasattr(cam, 'modes'):
+            self._validate_selection()
             return
             
         try:
             w, h = map(int, res.split("x"))
         except Exception:
-            return
-            
-        cam = next((c for c in self._system_probe.cameras if c.name == name), None)
-        if not cam:
             return
             
         # Get all modes that match this resolution
@@ -405,6 +407,9 @@ class ConfigDialog(QDialog):
         for m in matching_modes:
             if m.fps > 0:
                 fps_set.add(m.fps)
+                
+        if not fps_set:
+            fps_set = {30.0, 60.0, 24.0}
                 
         self.fps.addItem("", "")
         for f in sorted(fps_set, reverse=True):
@@ -415,11 +420,12 @@ class ConfigDialog(QDialog):
     def _on_fps_changed(self) -> None:
         fps_val = self.fps.currentData()
         res = self.resolution.currentData()
-        name = self.video_device.currentData()
+        cam = self.video_device.currentData()
         self.pixel_format.clear()
         self.video_codec.clear()
         
-        if not fps_val or not res or not name or not self._system_probe:
+        if not fps_val or not res or not cam or not hasattr(cam, 'modes'):
+            self._validate_selection()
             return
             
         try:
@@ -427,18 +433,15 @@ class ConfigDialog(QDialog):
         except Exception:
             return
             
-        cam = next((c for c in self._system_probe.cameras if c.name == name), None)
-        if not cam:
-            return
-            
         # Get matching mode for resolution + fps
         mode = next((m for m in cam.modes if m.width == w and m.height == h and abs(m.fps - float(fps_val)) < 0.1), None)
-        if not mode:
-            return
-            
+        
         formats = set()
-        for f in mode.formats:
-            formats.add(f)
+        if mode:
+            for f in mode.formats:
+                formats.add(f)
+        else:
+            formats = {"mjpeg", "yuyv422", "yuv420p"}
             
         self.pixel_format.addItem("", "")
         # prioritize mjpeg, then yuyv422
@@ -476,14 +479,14 @@ class ConfigDialog(QDialog):
         Disable Save if an obvious invalid combination is chosen.
         """
         errors = []
-        cam_name = self.video_device.currentData()
+        cam = self.video_device.currentData()
         res = self.resolution.currentData()
         fps = self.fps.currentData()
         fmt = self.pixel_format.currentData()
         vc = self.video_codec.currentData()
 
         # If camera is selected, ensure it has a valid configuration chain picked
-        if cam_name:
+        if cam:
             if not res: errors.append("Select a resolution")
             if not fps: errors.append("Select an FPS")
             if not fmt: errors.append("Select a format")
@@ -507,9 +510,10 @@ class ConfigDialog(QDialog):
             pass
 
     def _save(self) -> None:
+        cam = self.video_device.currentData()
         s = RecorderSettings(
-            video_device=str(self.video_device.currentData() or "").strip(),
-            audio_device=str(self.audio_device.currentData() or "").strip(),
+            video_device=str(cam.name if cam else "").strip(),
+            audio_device=str(self.audio_device.currentText() or "").strip(),
             resolution=str(self.resolution.currentData() or self.resolution.currentText()).strip(),
             fps=int(float(self.fps.currentData() or 30)),
             pixel_format=str(self.pixel_format.currentData() or "yuv420p"),
