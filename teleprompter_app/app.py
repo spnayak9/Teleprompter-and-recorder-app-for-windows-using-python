@@ -65,8 +65,8 @@ class TeleprompterController(QObject):
         # Phase 1: System Profile Single Source of Truth
         logger.info("Probing system capabilities (this may take a few seconds)...")
         self.system_profile = probe_system()
-        # Immediate fix: Detect OpenCV cameras
-        self.opencv_cameras = detect_cameras()
+        # opencv_cameras is already inside system_profile.cameras
+        self.opencv_cameras = self.system_profile.cameras
 
         self.window = MainWindow(self.settings, self.system_profile)
         self.recognition_bridge = RecognitionBridge()
@@ -176,9 +176,9 @@ class TeleprompterController(QObject):
                             device_idx = cam.opencv_index
                             break
                 
-                if device_idx < 0 and self.opencv_cameras:
+                if device_idx < 0 and self.system_profile.cameras:
                     # fallback to first available camera if none matched
-                    device_idx = self.opencv_cameras[0]["index"]
+                    device_idx = self.system_profile.cameras[0].opencv_index
 
                 if device_idx >= 0:
                     # stop existing previewer if settings changed
@@ -265,11 +265,10 @@ class TeleprompterController(QObject):
         self.window.set_status("Recognition stopped")
 
     def _on_recorder_config_saved(self) -> None:
-        # Config dialog saved recorder settings; re-apply settings so preview/recorders restart as needed
-        try:
-            self.apply_settings({})
-        except Exception:
-            logger.exception("Error applying settings after recorder config saved")
+        # Config dialog saved recorder settings.
+        # Per architectural correction: Do NOT restart preview or probe on save to avoid UI freeze.
+        # Settings will be used when recording starts or when background is toggled.
+        self.window.set_status("Recording settings saved.")
 
     def handle_recognition_result(self, result: RecognitionResult) -> None:
         # Convert recognizer word timings to recording-relative times and
@@ -431,8 +430,14 @@ class TeleprompterController(QObject):
             QMessageBox.critical(self.window, "Could not prepare recording", str(exc))
             return
 
-        # Create subtitle generator if requested (or always create for convenience)
-        self.subtitle_generator = SubtitleGenerator(files.srt_path, files.transcript_path) if srt_enabled or True else None
+        # STOP preview first (critical to avoid hardware conflict)
+        if self.previewer is not None:
+            try:
+                self.previewer.stop()
+                self.previewer = None
+                self.window.preview_overlay.enable_preview(False)
+            except Exception:
+                pass
 
         # Decide which recorder(s) to start
         try:

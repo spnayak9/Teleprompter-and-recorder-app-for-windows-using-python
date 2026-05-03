@@ -217,10 +217,10 @@ def probe_system(ffmpeg_path: Optional[str] = None, timeout: int = 8) -> SystemP
     except Exception:
         sp.ffmpeg = None
 
-    # Step 1: Detect cameras via OpenCV (Primary)
+    # Step 1: Detect cameras via OpenCV (for index mapping)
     cv_cams = detect_cameras()
     
-    # Step 2: Try to get FFmpeg device names for recording
+    # Step 2: Try to get FFmpeg device names and modes (Authoritative Source)
     try:
         path = ffmpeg_path or ("ffmpeg" if shutil.which("ffmpeg") else None)
         if path:
@@ -229,28 +229,32 @@ def probe_system(ffmpeg_path: Optional[str] = None, timeout: int = 8) -> SystemP
             ff_video_names = devs.get('video', [])
             
             final_cameras = []
-            for i, cv_cam in enumerate(cv_cams):
-                name = cv_cam['name']
-                idx = cv_cam['opencv_index']
-                
-                # Attempt to match with FFmpeg name by index
-                ff_name = ff_video_names[i] if i < len(ff_video_names) else None
+            # We trust the order of devices between OpenCV and FFmpeg on Windows DShow/MSMF
+            for i, name in enumerate(ff_video_names):
+                # Map to OpenCV index if available
+                # If we have 2 FFmpeg cameras, we expect they correspond to OpenCV index 0 and 1
+                cv_idx = i if i < len(cv_cams) else -1
                 
                 profile = CameraProfile(
-                    name=ff_name or name,
-                    opencv_index=idx,
-                    device_path=ff_name
+                    name=name,
+                    opencv_index=cv_idx,
+                    device_path=name
                 )
                 
-                # If we have an FFmpeg name, probe it for modes
-                if ff_name:
-                    opts = _run_quiet([path, '-f', 'dshow', '-list_options', 'true', '-i', f'video={ff_name}'], timeout=timeout)
-                    profile.modes = _parse_dshow_options(opts)
+                # Probe this specific device for modes
+                opts = _run_quiet([path, '-f', 'dshow', '-list_options', 'true', '-i', f'video={name}'], timeout=timeout)
+                profile.modes = _parse_dshow_options(opts)
                 
                 final_cameras.append(profile)
+            
+            # If FFmpeg found NO cameras but OpenCV did, provide fallback profiles
+            if not final_cameras and cv_cams:
+                for c in cv_cams:
+                    final_cameras.append(CameraProfile(name=c['name'], opencv_index=c['opencv_index']))
+                    
             sp.cameras = final_cameras
 
-            # Audio discovery (FFmpeg based)
+            # Audio discovery
             auds = []
             for name in devs.get('audio', []):
                 opts = _run_quiet([path, '-f', 'dshow', '-list_options', 'true', '-i', f'audio={name}'], timeout=timeout)

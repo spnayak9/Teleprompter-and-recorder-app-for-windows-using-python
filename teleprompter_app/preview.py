@@ -22,7 +22,7 @@ class PreviewWorker(QThread):
         self._running = False
 
     def run(self):
-        # Use DSHOW for low latency on Windows
+        # Use DSHOW exclusively for preview to match discovery and avoid backend conflicts
         cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
 
         if self.width and self.height:
