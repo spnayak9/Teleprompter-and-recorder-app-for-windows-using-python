@@ -135,7 +135,10 @@ class ConfigDialog(QDialog):
             if idx >= 0:
                 self.video_device.setCurrentIndex(idx)
         # Populate resolutions from system probe if available
-        self._on_camera_changed()
+        if self._ffmpeg_caps:
+            self._on_ffmpeg_probed(self._ffmpeg_caps)
+            
+        self._on_video_device_changed()
 
     def _build_video_tab(self) -> None:
         form = QFormLayout(self._video_tab)

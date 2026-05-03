@@ -53,9 +53,13 @@ class TeleprompterView(QTextBrowser):
             # preview underneath is visible. Otherwise keep a solid background.
             try:
                 if getattr(self.settings, "use_camera_background", False):
-                    self.setStyleSheet("background-color: transparent; border: none;")
+                    self.setStyleSheet("background: transparent; border: none;")
+                    self.viewport().setStyleSheet("background: transparent;")
+                    self.setAttribute(Qt.WA_TranslucentBackground)
                 else:
                     self.setStyleSheet("")
+                    self.viewport().setStyleSheet("")
+                    self.setAttribute(Qt.WA_TranslucentBackground, False)
             except Exception:
                 pass
             self.setHtml(self._build_document_html())

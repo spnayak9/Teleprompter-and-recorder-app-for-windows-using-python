@@ -126,6 +126,7 @@ class CameraMode:
 class CameraProfile:
     name: str
     device_path: str
+    opencv_index: int = -1
     modes: List[CameraMode] = field(default_factory=list)
 
 
@@ -221,10 +222,10 @@ def probe_system(ffmpeg_path: Optional[str] = None, timeout: int = 8) -> SystemP
         out = _run_quiet([path, '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'], timeout=timeout)
         devs = _parse_list_devices(out)
         cams = []
-        for name in devs.get('video', []):
+        for i, name in enumerate(devs.get('video', [])):
             opts = _run_quiet([path, '-f', 'dshow', '-list_options', 'true', '-i', f'video={name}'], timeout=timeout)
             modes = _parse_dshow_options(opts)
-            cams.append(CameraProfile(name=name, device_path=name, modes=modes))
+            cams.append(CameraProfile(name=name, device_path=name, modes=modes, opencv_index=i))
         auds = []
         for name in devs.get('audio', []):
             opts = _run_quiet([path, '-f', 'dshow', '-list_options', 'true', '-i', f'audio={name}'], timeout=timeout)

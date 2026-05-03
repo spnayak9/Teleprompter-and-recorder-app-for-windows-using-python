@@ -77,12 +77,8 @@ class PreviewOverlay(QWidget):
         except Exception:
             pass
 
-    def set_frame(self, frame: np.ndarray) -> None:
-        # frame expected in BGR (OpenCV) format
-        rgb = frame[:, :, ::-1]
-        h, w, ch = rgb.shape
-        bytes_per_line = ch * w
-        image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+    def set_frame(self, image: QImage) -> None:
+        # image expected as QImage (already converted to RGB)
         pix = QPixmap.fromImage(image)
         self.preview_label.setPixmap(pix)
         if not self.preview_label.isVisible():

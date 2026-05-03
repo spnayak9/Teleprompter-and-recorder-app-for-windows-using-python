@@ -23,6 +23,8 @@ from teleprompter_app.speech.vosk_engine import VoskSpeechRecognizer
 from teleprompter_app.ui.main_window import MainWindow
 from teleprompter_app.utils.config import AppSettings, ConfigManager
 from teleprompter_app.ffmpeg_probe import probe_system, SystemProbe
+from teleprompter_app.preview import PreviewWorker
+from teleprompter_app.camera_mapper import detect_cameras
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,8 @@ class TeleprompterController(QObject):
         # Phase 1: System Profile Single Source of Truth
         logger.info("Probing system capabilities (this may take a few seconds)...")
         self.system_profile = probe_system()
+        # Immediate fix: Detect OpenCV cameras
+        self.opencv_cameras = detect_cameras()
 
         self.window = MainWindow(self.settings, self.system_profile)
         self.recognition_bridge = RecognitionBridge()
@@ -151,7 +155,6 @@ class TeleprompterController(QObject):
         # Start/stop preview based on settings and recorder config
         try:
             from teleprompter_app.config_manager import ConfigManager as RecorderConfigManager
-            from teleprompter_app.preview import PreviewConfig, Previewer
 
             recorder_mgr = RecorderConfigManager()
             rsettings = recorder_mgr.load()
@@ -165,53 +168,57 @@ class TeleprompterController(QObject):
             if getattr(self.settings, "use_camera_background", False) and rsettings.video_device:
                 size = mapping.get(getattr(self.settings, "preview_resolution", "360p"), (640, 360))
                 
-                device_idx = 0
-                if self.system_profile and getattr(self.system_profile, "cameras", None):
-                    for i, cam in enumerate(self.system_profile.cameras):
+                device_idx = -1
+                # Try to map the recorder's video_device (name) to an OpenCV index
+                if self.system_profile and self.system_profile.cameras:
+                    for cam in self.system_profile.cameras:
                         if cam.name == rsettings.video_device:
-                            device_idx = i
+                            device_idx = cam.opencv_index
                             break
-                            
-                cfg = PreviewConfig(device_idx=device_idx, preview_size=size, desired_fps=rsettings.fps)
-                # stop existing previewer if settings changed
-                if self.previewer is not None:
+                
+                if device_idx < 0 and self.opencv_cameras:
+                    # fallback to first available camera if none matched
+                    device_idx = self.opencv_cameras[0]["index"]
+
+                if device_idx >= 0:
+                    # stop existing previewer if settings changed
+                    if self.previewer is not None:
+                        try:
+                            self.previewer.stop()
+                            self.previewer.deleteLater()
+                        except Exception:
+                            pass
+                    
+                    self.previewer = PreviewWorker(device_idx, width=size[0], height=size[1])
+                    self.previewer.frame_ready.connect(self.window.preview_overlay.set_frame)
+                    self.previewer.fps_ready.connect(self.window.preview_overlay.set_fps)
+                    
                     try:
-                        self.previewer.stop()
-                    except Exception:
-                        pass
-                # marshal preview callbacks into the Qt main thread using QTimer.singleShot
-                self.previewer = Previewer(
-                    cfg,
-                    frame_callback=lambda f: QTimer.singleShot(0, lambda f=f: self.window.preview_overlay.set_frame(f)),
-                    fps_callback=lambda v: QTimer.singleShot(0, lambda v=v: self.window.preview_overlay.set_fps(v)),
-                )
-                try:
-                    self.previewer.start()
-                    # enable overlay preview
-                    try:
+                        self.previewer.start()
                         self.window.preview_overlay.enable_preview(True)
                     except Exception:
-                        pass
-                except Exception:
-                    logger.exception("Could not start previewer")
+                        logger.exception("Could not start previewer")
+                else:
+                    logger.warning("No valid camera index found for preview")
             else:
                 if self.previewer is not None:
                     try:
                         self.previewer.stop()
+                        self.previewer.deleteLater()
                     except Exception:
                         pass
+                    self.previewer = None
                 try:
                     self.window.preview_overlay.enable_preview(False)
                 except Exception:
                     pass
-                self.previewer = None
             # apply background color to preview overlay (fallback when not using camera)
             try:
                 self.window.preview_overlay.set_background_color(getattr(self.settings, "background_color", "#000000"))
             except Exception:
                 pass
         except Exception:
-            logger.debug("Preview integration not available or failed to start")
+            logger.exception("Preview integration failed")
 
         if self.recognizer and self.recognizer.is_running:
             self.window.set_status("Settings saved. Restart listening to change microphone or model.")
