@@ -30,6 +30,14 @@ class RecorderSettings:
     channels: int = 1
     audio_codec: str = "flac"
 
+    # Recording mode (controls which streams to capture)
+    recording_mode: str = "audio + video + srt"
+
+    # Background / preview
+    use_camera_background: bool = False
+    preview_resolution: str = "360p"
+    background_color: str = "#000000"
+
     # Performance
     rtbufsize: str = "200M"
     thread_queue_size: int = 512

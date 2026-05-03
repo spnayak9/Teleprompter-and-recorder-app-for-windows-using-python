@@ -34,6 +34,7 @@ class AppSettings:
     recording_channels: int = 1
     use_camera_background: bool = False
     preview_resolution: str = "360p"
+    background_color: str = "#000000"
 
     def updated(self, values: dict[str, Any]) -> "AppSettings":
         valid = {key: value for key, value in values.items() if hasattr(self, key)}

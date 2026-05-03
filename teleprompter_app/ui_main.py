@@ -31,6 +31,13 @@ class PreviewOverlay(QWidget):
         self.preview_label.setScaledContents(True)
         self.preview_label.setSizePolicy(self.teleprompter.sizePolicy())
         self.preview_label.hide()
+        # let mouse events pass through to the teleprompter widget
+        try:
+            self.preview_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            # ensure preview is stacked under the teleprompter
+            self.preview_label.stackUnder(self.teleprompter)
+        except Exception:
+            pass
 
         self.fps_label = QLabel(self)
         self.fps_label.setStyleSheet("color: #00ff00; background: rgba(0,0,0,0.5); padding: 4px;")
@@ -39,8 +46,38 @@ class PreviewOverlay(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.preview_label)
+        # Teleprompter is managed by the layout; preview_label is positioned
+        # absolutely as a background child and must not be part of the layout
         layout.addWidget(self.teleprompter)
+        # ensure preview is below the teleprompter
+        try:
+            self.preview_label.lower()
+            self.teleprompter.raise_()
+        except Exception:
+            pass
+        self._preview_enabled = False
+        self._background_color = "#000000"
+
+    def enable_preview(self, enabled: bool) -> None:
+        self._preview_enabled = bool(enabled)
+        if not self._preview_enabled:
+            self.preview_label.hide()
+            self.fps_label.hide()
+        else:
+            # show current background color until frames arrive
+            self.set_background_color(self._background_color)
+
+    def set_background_color(self, color: str) -> None:
+        self._background_color = color
+        # create a solid color pixmap as fallback background
+        try:
+            pix = QPixmap(self.size())
+            pix.fill(QColor(color))
+            self.preview_label.setPixmap(pix)
+            if not self.preview_label.isVisible():
+                self.preview_label.show()
+        except Exception:
+            pass
 
     def set_frame(self, frame: np.ndarray) -> None:
         # frame expected in BGR (OpenCV) format
@@ -52,6 +89,12 @@ class PreviewOverlay(QWidget):
         self.preview_label.setPixmap(pix)
         if not self.preview_label.isVisible():
             self.preview_label.show()
+            try:
+                # ensure preview_label stays behind teleprompter content
+                self.preview_label.lower()
+                self.teleprompter.raise_()
+            except Exception:
+                pass
             self.fps_label.show()
 
     def set_fps(self, fps: float) -> None:
@@ -62,8 +105,9 @@ class PreviewOverlay(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
-        self.preview_label.resize(self.size())
-        self.teleprompter.resize(self.size())
+        # Preview label fills the widget as absolute background
+        self.preview_label.setGeometry(0, 0, self.width(), self.height())
+        # teleprompter is laid out by the layout; no absolute resize required
         self.fps_label.move(self.width() - self.fps_label.width() - 12, 8)
 
 

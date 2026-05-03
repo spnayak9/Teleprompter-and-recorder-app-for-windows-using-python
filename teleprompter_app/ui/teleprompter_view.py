@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QFrame, QTextBrowser, QTextEdit
 
@@ -49,6 +49,15 @@ class TeleprompterView(QTextBrowser):
         progress_index = self.progress_index
         self.settings = settings
         if self.raw_html:
+            # If using camera as background, make the widget transparent so the
+            # preview underneath is visible. Otherwise keep a solid background.
+            try:
+                if getattr(self.settings, "use_camera_background", False):
+                    self.setStyleSheet("background-color: transparent; border: none;")
+                else:
+                    self.setStyleSheet("")
+            except Exception:
+                pass
             self.setHtml(self._build_document_html())
             self._resolve_document_positions()
             self.current_index = -1
@@ -164,9 +173,11 @@ class TeleprompterView(QTextBrowser):
         weight = "700" if self.settings.bold else "400"
         style = "italic" if self.settings.italic else "normal"
         decoration = "underline" if self.settings.underline else "none"
+        # use transparent background for the document when camera is used
+        bg = "transparent" if getattr(self.settings, "use_camera_background", False) else (self.settings.background_color or "#111318")
         dynamic_css = f"""
             body {{
-                background: #111318;
+                background: {bg};
                 color: {self.settings.text_color};
                 font-family: "{self.settings.font_family}", sans-serif;
                 font-size: {self.settings.font_size}px;

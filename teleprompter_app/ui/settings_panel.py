@@ -29,6 +29,8 @@ from teleprompter_app.core.parser import InputType
 from teleprompter_app.recording.audio_config import RecordingFormat
 from teleprompter_app.recording.audio_config import SUPPORTED_SAMPLE_RATES, BitDepth, ChannelMode
 from teleprompter_app.utils.config import AppSettings
+from teleprompter_app.system_profile import load_profile_file
+from pathlib import Path
 
 
 class SettingsPanel(QWidget):
@@ -91,6 +93,7 @@ class SettingsPanel(QWidget):
         render_form.addRow("Highlight", self.highlight_color_button)
         render_form.addRow("Scroll speed", self.scroll_speed)
 
+        # Input group
         input_group = QGroupBox("Input")
         input_form = QFormLayout(input_group)
         self.input_mode = QComboBox()
@@ -100,6 +103,7 @@ class SettingsPanel(QWidget):
         self.input_mode.addItem("HTML", InputType.HTML.value)
         input_form.addRow("Mode", self.input_mode)
 
+        # Audio group
         audio_group = QGroupBox("Audio")
         audio_form = QFormLayout(audio_group)
         self.microphone = QComboBox()
@@ -118,9 +122,7 @@ class SettingsPanel(QWidget):
         audio_form.addRow("Microphone", mic_row)
         audio_form.addRow("Vosk model", model_row)
 
-        recording_group = QGroupBox("Recording")
-        recording_form = QFormLayout(recording_group)
-
+        # Background group
         background_group = QGroupBox("Background")
         background_form = QFormLayout(background_group)
         self.use_camera_background = QCheckBox("Use camera as background")
@@ -130,6 +132,10 @@ class SettingsPanel(QWidget):
         self.preview_resolution.addItem("480p", "480p")
         self.preview_resolution.addItem("720p", "720p")
 
+        # background color selector
+        self.background_color_button = QPushButton()
+        self.background_color_button.setToolTip("Choose background color")
+
         self.recording_dir = QLineEdit()
         self.recording_dir.setReadOnly(True)
         self.recording_dir.setPlaceholderText("Choose project folder before recording")
@@ -137,41 +143,10 @@ class SettingsPanel(QWidget):
         recording_dir_row = QHBoxLayout()
         recording_dir_row.addWidget(self.recording_dir, 1)
         recording_dir_row.addWidget(self.select_recording_dir)
-
-        self.recording_format = QComboBox()
-        self.recording_format.addItem("Both WAV + FLAC", RecordingFormat.BOTH.value)
-        self.recording_format.addItem("WAV only", RecordingFormat.WAV.value)
-        self.recording_format.addItem("FLAC only", RecordingFormat.FLAC.value)
-
-        self.recording_sample_rate = QComboBox()
-        self.recording_sample_rate.addItem("48000 Hz", 48000)
-        self.recording_sample_rate.addItem("44100 Hz", 44100)
-
-        self.recording_bit_depth = QComboBox()
-        self.recording_bit_depth.addItem("16-bit PCM", 16)
-        self.recording_bit_depth.addItem("24-bit PCM", 24)
-
-        self.recording_channels = QComboBox()
-        self.recording_channels.addItem("Mono", 1)
-        self.recording_channels.addItem("Stereo", 2)
-
-        recording_controls = QHBoxLayout()
-        self.start_recording_button = QPushButton("Start Recording")
-        self.stop_recording_button = QPushButton("Stop Recording")
-        self.stop_recording_button.setEnabled(False)
-        recording_controls.addWidget(self.start_recording_button)
-        recording_controls.addWidget(self.stop_recording_button)
-
-        self.recording_status = QLabel("Idle")
-        self.recording_status.setMinimumWidth(160)
-
-        recording_form.addRow("Project", recording_dir_row)
-        recording_form.addRow("Format", self.recording_format)
-        recording_form.addRow("Sample rate", self.recording_sample_rate)
-        recording_form.addRow("Bit depth", self.recording_bit_depth)
-        recording_form.addRow("Channels", self.recording_channels)
-        recording_form.addRow("Status", self.recording_status)
-        recording_form.addRow("Controls", recording_controls)
+        # show project directory in background group
+        background_form.addRow("Project", recording_dir_row)
+        background_form.addRow("Preview resolution", self.preview_resolution)
+        background_form.addRow("Background color", self.background_color_button)
 
         controls = QGroupBox("Session")
         controls_layout = QHBoxLayout(controls)
@@ -186,7 +161,6 @@ class SettingsPanel(QWidget):
         root.addWidget(background_group)
         root.addWidget(input_group)
         root.addWidget(audio_group)
-        root.addWidget(recording_group)
         root.addWidget(controls)
         root.addStretch(1)
 
@@ -202,19 +176,16 @@ class SettingsPanel(QWidget):
         self.microphone.currentIndexChanged.connect(lambda _index: self._emit_settings())
         self.use_camera_background.toggled.connect(lambda _checked: self._emit_settings())
         self.preview_resolution.currentIndexChanged.connect(lambda _index: self._emit_settings())
+        self.background_color_button.clicked.connect(lambda _checked=False: self._choose_color("background_color"))
         self.microphone.currentIndexChanged.connect(lambda _index: self._on_microphone_selection_changed())
         self.model_path.editingFinished.connect(self._emit_settings)
-        self.recording_format.currentIndexChanged.connect(lambda _index: self._emit_settings())
-        self.recording_sample_rate.currentIndexChanged.connect(lambda _index: self._emit_settings())
-        self.recording_bit_depth.currentIndexChanged.connect(lambda _index: self._emit_settings())
-        self.recording_channels.currentIndexChanged.connect(lambda _index: self._emit_settings())
+        # recording format controls moved to Configure dialog
         self.browse_model.clicked.connect(lambda _checked=False: self._browse_model())
         self.refresh_mics.clicked.connect(lambda _checked=False: self.refresh_microphones_requested.emit())
         self.start_button.clicked.connect(lambda _checked=False: self.start_requested.emit())
         self.stop_button.clicked.connect(lambda _checked=False: self.stop_requested.emit())
         self.select_recording_dir.clicked.connect(lambda _checked=False: self.select_recording_dir_requested.emit())
-        self.start_recording_button.clicked.connect(lambda _checked=False: self.start_recording_requested.emit())
-        self.stop_recording_button.clicked.connect(lambda _checked=False: self.stop_recording_requested.emit())
+        # recording start/stop handled from Configure dialog now
 
     def apply_settings(self, settings: AppSettings) -> None:
         self._building = True
@@ -227,15 +198,30 @@ class SettingsPanel(QWidget):
         self.scroll_speed.setValue(settings.scroll_speed)
         self.model_path.setText(settings.vosk_model_path)
         self.recording_dir.setText(settings.recording_project_dir)
-        self._set_combo_by_data(self.recording_format, settings.recording_format)
-        self._set_combo_by_data(self.recording_sample_rate, settings.recording_sample_rate)
-        self._set_combo_by_data(self.recording_bit_depth, settings.recording_bit_depth)
-        self._set_combo_by_data(self.recording_channels, settings.recording_channels)
         self._set_button_color(self.text_color_button, settings.text_color, "Text color")
         self._set_button_color(self.highlight_color_button, settings.highlight_color, "Highlight color")
 
         self.use_camera_background.setChecked(getattr(settings, "use_camera_background", False))
         self._set_combo_by_data(self.preview_resolution, getattr(settings, "preview_resolution", "360p"))
+        # attempt to populate preview resolutions from system profile if available
+        try:
+            profile_path = Path.cwd() / "full_system_profile.txt"
+            if profile_path.exists():
+                profile = load_profile_file(profile_path)
+                # gather unique resolutions
+                res = sorted({f"{m.width}x{m.height}" for cam in profile.cameras for m in cam.modes})
+                if res:
+                    self.preview_resolution.clear()
+                    for r in res:
+                        # normalize to simple labels like 720p when height available
+                        h = int(r.split("x")[1]) if "x" in r else 0
+                        label = f"{h}p" if h else r
+                        self.preview_resolution.addItem(label, r)
+        except Exception:
+            pass
+
+        # background color button
+        self._set_button_color(self.background_color_button, getattr(settings, "background_color", "#000000"), "Background color")
 
         index = self.input_mode.findData(settings.input_mode)
         self.input_mode.setCurrentIndex(index if index >= 0 else 0)
@@ -333,32 +319,33 @@ class SettingsPanel(QWidget):
             # If probing fails, fall back to device defaults
             sample_rates = [device.default_sample_rate] + [r for r in sample_rates if r != device.default_sample_rate]
 
-        # Populate combos
-        self.recording_sample_rate.clear()
-        for rate in sample_rates:
-            self.recording_sample_rate.addItem(f"{rate} Hz", rate)
-
-        self.recording_bit_depth.clear()
-        for bit in bit_depths:
-            self.recording_bit_depth.addItem(f"{bit}-bit PCM", bit)
-
-        self.recording_channels.clear()
-        for ch in channels:
-            label = "Mono" if ch == 1 else "Stereo"
-            self.recording_channels.addItem(label, ch)
+        # Store probe results for potential use by other components
+        self._probe_supported_sample_rates = sample_rates
+        self._probe_supported_bit_depths = bit_depths
+        self._probe_supported_channels = channels
 
     def set_listening(self, listening: bool) -> None:
         self.start_button.setEnabled(not listening)
         self.stop_button.setEnabled(listening)
 
     def set_recording(self, recording: bool, status: str = "") -> None:
-        self.start_recording_button.setEnabled(not recording)
-        self.stop_recording_button.setEnabled(recording)
+        # disable selection while recording
+        try:
+            self.select_recording_dir.setEnabled(not recording)
+        except Exception:
+            pass
         if status:
-            self.recording_status.setText(status)
+            # update tooltip with status
+            try:
+                self.select_recording_dir.setToolTip(status)
+            except Exception:
+                pass
 
     def set_recording_status(self, status: str) -> None:
-        self.recording_status.setText(status)
+        try:
+            self.select_recording_dir.setToolTip(status)
+        except Exception:
+            pass
 
     def set_recording_directory(self, directory: str) -> None:
         self.recording_dir.setText(directory)
@@ -385,10 +372,6 @@ class SettingsPanel(QWidget):
                 "microphone_index": int(microphone_index) if microphone_index is not None else -1,
                 "vosk_model_path": self.model_path.text().strip(),
                 "recording_project_dir": self.recording_dir.text().strip(),
-                "recording_format": str(self.recording_format.currentData()),
-                "recording_sample_rate": int(self.recording_sample_rate.currentData()),
-                "recording_bit_depth": int(self.recording_bit_depth.currentData()),
-                "recording_channels": int(self.recording_channels.currentData()),
                 "use_camera_background": bool(self.use_camera_background.isChecked()),
                 "preview_resolution": str(self.preview_resolution.currentData()),
             }

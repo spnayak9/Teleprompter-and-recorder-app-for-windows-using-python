@@ -73,6 +73,29 @@ class FFmpegRecorder:
         # Compose DirectShow input string(s).
         video = self.config.video_device
         audio = self.config.audio_device
+        # Support two input modes:
+        # - DirectShow devices (Windows): video=<name> or video=<name>:audio=<name>
+        # - Screen capture prefix 'screen:<title>' which uses gdigrab (Windows)
+        if video and video.startswith("screen:"):
+            # screen capture: 'screen:desktop' or 'screen:Window Title'
+            title = video.split(":", 1)[1] or "desktop"
+            args: List[str] = ["-f", "gdigrab"]
+            # thread queue size is not applicable to gdigrab but keep option ordering
+            args.extend(["-thread_queue_size", str(self.config.thread_queue_size)])
+            if self.config.fps:
+                args.extend(["-framerate", str(int(self.config.fps))])
+            # use title= for window capture, or desktop for full screen
+            if title.lower() == "desktop":
+                args.extend(["-i", "desktop"])
+            else:
+                args.extend(["-i", f"title={title}"])
+            # optionally attach audio input if requested (use default audio device name)
+            if audio:
+                # append audio input using dshow on Windows
+                args.extend(["-f", "dshow", "-i", f"audio={audio}"])
+            return args
+
+        # default: DirectShow device(s)
         if video and audio:
             input_spec = f"video={video}:audio={audio}"
         elif video:

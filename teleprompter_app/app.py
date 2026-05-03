@@ -87,6 +87,7 @@ class TeleprompterController(QObject):
         self.window.start_recording_requested.connect(self.start_recording)
         self.window.stop_recording_requested.connect(self.stop_recording)
         self.window.select_recording_dir_requested.connect(self.select_recording_directory)
+        self.window.config_saved.connect(lambda: self._on_recorder_config_saved())
 
         self.recognition_bridge.result_received.connect(self.handle_recognition_result)
         self.recognition_bridge.status_changed.connect(self.window.set_status)
@@ -154,23 +155,37 @@ class TeleprompterController(QObject):
                         self.previewer.stop()
                     except Exception:
                         pass
-                self.previewer = Previewer(cfg, frame_callback=lambda f: self.window.preview_overlay.set_frame(f), fps_callback=lambda v: self.window.preview_overlay.set_fps(v))
+                # marshal preview callbacks into the Qt main thread using QTimer.singleShot
+                self.previewer = Previewer(
+                    cfg,
+                    frame_callback=lambda f: QTimer.singleShot(0, lambda f=f: self.window.preview_overlay.set_frame(f)),
+                    fps_callback=lambda v: QTimer.singleShot(0, lambda v=v: self.window.preview_overlay.set_fps(v)),
+                )
                 try:
                     self.previewer.start()
+                    # enable overlay preview
+                    try:
+                        self.window.preview_overlay.enable_preview(True)
+                    except Exception:
+                        pass
                 except Exception:
                     logger.exception("Could not start previewer")
-                # update recording controls mode display
-                try:
-                    self.window.recording_controls.set_selected_mode(f"{rsettings.resolution} @{rsettings.fps} {rsettings.video_codec}")
-                except Exception:
-                    pass
             else:
                 if self.previewer is not None:
                     try:
                         self.previewer.stop()
                     except Exception:
                         pass
-                    self.previewer = None
+                try:
+                    self.window.preview_overlay.enable_preview(False)
+                except Exception:
+                    pass
+                self.previewer = None
+            # apply background color to preview overlay (fallback when not using camera)
+            try:
+                self.window.preview_overlay.set_background_color(getattr(self.settings, "background_color", "#000000"))
+            except Exception:
+                pass
         except Exception:
             logger.debug("Preview integration not available or failed to start")
 
@@ -217,6 +232,13 @@ class TeleprompterController(QObject):
         self.state.set_listening(False)
         self.window.set_listening(False)
         self.window.set_status("Recognition stopped")
+
+    def _on_recorder_config_saved(self) -> None:
+        # Config dialog saved recorder settings; re-apply settings so preview/recorders restart as needed
+        try:
+            self.apply_settings({})
+        except Exception:
+            logger.exception("Error applying settings after recorder config saved")
 
     def handle_recognition_result(self, result: RecognitionResult) -> None:
         # Convert recognizer word timings to recording-relative times and
@@ -306,10 +328,31 @@ class TeleprompterController(QObject):
         try:
             mode_text = self.window.recording_controls.mode.currentText()
         except Exception:
-            mode_text = None
+            # fallback to persisted recorder config
+            try:
+                from teleprompter_app.config_manager import ConfigManager as RecorderConfigManager
+
+                rec_mgr = RecorderConfigManager()
+                rsettings = rec_mgr.load()
+                mode_text = getattr(rsettings, "recording_mode", None)
+            except Exception:
+                mode_text = None
+
+        # Load recorder settings (preferred source for recording-specific options)
+        try:
+            from teleprompter_app.config_manager import ConfigManager as RecorderConfigManager
+
+            rec_mgr = RecorderConfigManager()
+            rsettings = rec_mgr.load()
+            # If no explicit mode selected in UI, use persisted setting
+            if not mode_text:
+                mode_text = getattr(rsettings, "recording_mode", None)
+        except Exception:
+            rsettings = None
 
         # Map mode to booleans: (audio, video, srt)
         mode_map = {
+            "record main view": (False, True, False),
             "record only srt": (False, False, True),
             "record only audio": (True, False, False),
             "record only video": (False, True, False),
@@ -322,11 +365,12 @@ class TeleprompterController(QObject):
         audio_enabled, video_enabled, srt_enabled = mode_map.get(mode_text or "", (True, False, True))
 
         # Prepare an audio RecordingConfig for file naming and audio settings
+        # Prefer recorder settings when available
         audio_config = RecordingConfig(
-            sample_rate=self.settings.recording_sample_rate,
-            bit_depth=self.settings.recording_bit_depth,
-            channels=self.settings.recording_channels,
-            output_format=self.settings.recording_format,
+            sample_rate=(rsettings.sample_rate if rsettings is not None else self.settings.recording_sample_rate),
+            bit_depth=(getattr(rsettings, "bit_depth", None) or self.settings.recording_bit_depth),
+            channels=(rsettings.channels if rsettings is not None else self.settings.recording_channels),
+            output_format=(getattr(rsettings, "container", None) or self.settings.recording_format),
         )
 
         try:
@@ -368,6 +412,14 @@ class TeleprompterController(QObject):
                     thread_queue_size=rsettings.thread_queue_size,
                     extra_ffmpeg_args=(rsettings.extra_ffmpeg_args.split() if rsettings.extra_ffmpeg_args else None),
                 )
+
+                # special-case: capture the application main window (rendered teleprompter)
+                if mode_text == "record main view":
+                    try:
+                        title = str(self.window.windowTitle()) or "desktop"
+                        ff_cfg.video_device = f"screen:{title}"
+                    except Exception:
+                        ff_cfg.video_device = "screen:desktop"
 
                 self.ffmpeg_recorder = FFmpegRecorder(ff_cfg, out_file)
                 self.ffmpeg_recorder.start()

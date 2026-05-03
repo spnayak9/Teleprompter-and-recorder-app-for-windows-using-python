@@ -63,16 +63,31 @@ class Previewer:
         cfg = self.config
         cap = None
         try:
-            # Use dshow device string
-            device_str = f"video={cfg.camera_name}"
-            cap = cv2.VideoCapture(device_str, cfg.backend)
+            device_idx = 0
+            try:
+                import subprocess
+                import re
+                out = subprocess.run(["ffmpeg", "-list_devices", "true", "-f", "dshow", "-i", "dummy"], capture_output=True, text=True, errors="ignore").stderr
+                video_devs = []
+                for ln in out.splitlines():
+                    if 'DirectShow audio devices' in ln or 'Audio devices' in ln:
+                        break
+                    m = re.search(r'"(.+?)"', ln)
+                    if m:
+                        video_devs.append(m.group(1))
+                if cfg.camera_name in video_devs:
+                    device_idx = video_devs.index(cfg.camera_name)
+                else:
+                    try:
+                        device_idx = int(cfg.camera_name)
+                    except ValueError:
+                        pass
+            except Exception:
+                pass
+
+            cap = cv2.VideoCapture(device_idx, cfg.backend)
             if not cap.isOpened():
-                # try numeric open (index)
-                try:
-                    idx = int(cfg.camera_name)
-                    cap = cv2.VideoCapture(idx)
-                except Exception:
-                    raise RuntimeError(f"Could not open camera: {cfg.camera_name}")
+                raise RuntimeError(f"Could not open camera index {device_idx} for {cfg.camera_name}")
 
             if cfg.desired_fps:
                 cap.set(cv2.CAP_PROP_FPS, float(cfg.desired_fps))
