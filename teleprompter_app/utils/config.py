@@ -32,6 +32,8 @@ class AppSettings:
     recording_sample_rate: int = 48000
     recording_bit_depth: int = 16
     recording_channels: int = 1
+    use_camera_background: bool = False
+    preview_resolution: str = "360p"
 
     def updated(self, values: dict[str, Any]) -> "AppSettings":
         valid = {key: value for key, value in values.items() if hasattr(self, key)}

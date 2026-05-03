@@ -10,7 +10,9 @@ from teleprompter_app.audio.mic_manager import MicrophoneDevice
 from teleprompter_app.core.tokenizer import Token
 from teleprompter_app.ui.settings_panel import SettingsPanel
 from teleprompter_app.ui.teleprompter_view import TeleprompterView
+from teleprompter_app.ui_main import PreviewOverlay, RecordingControls
 from teleprompter_app.utils.config import AppSettings
+from teleprompter_app.ui_config import ConfigDialog
 
 
 class MainWindow(QMainWindow):
@@ -33,7 +35,9 @@ class MainWindow(QMainWindow):
         self.resize(1280, 820)
 
         self.teleprompter = TeleprompterView(settings)
-        self.setCentralWidget(self.teleprompter)
+        # Wrap teleprompter in preview overlay (preview hidden by default)
+        self.preview_overlay = PreviewOverlay(self.teleprompter)
+        self.setCentralWidget(self.preview_overlay)
 
         self.settings_panel = SettingsPanel(settings)
         self.settings_dock = QDockWidget("Settings", self)
@@ -60,16 +64,24 @@ class MainWindow(QMainWindow):
         self.rewind_action.setShortcut("Ctrl+Home")
 
         toolbar.addAction(self.open_action)
+        self.config_action = QAction("Configure", self)
+        toolbar.addAction(self.config_action)
         toolbar.addSeparator()
         toolbar.addAction(self.start_action)
         toolbar.addAction(self.stop_action)
         toolbar.addAction(self.rewind_action)
+        # Recording controls widget (compact)
+        self.recording_controls = RecordingControls(self)
+        toolbar.addWidget(self.recording_controls)
 
     def _connect_signals(self) -> None:
         self.open_action.triggered.connect(lambda _checked=False: self._choose_script())
+        self.config_action.triggered.connect(lambda _checked=False: self._open_config())
         self.start_action.triggered.connect(lambda _checked=False: self.start_requested.emit())
         self.stop_action.triggered.connect(lambda _checked=False: self.stop_requested.emit())
         self.rewind_action.triggered.connect(lambda _checked=False: self.rewind_requested.emit())
+        self.recording_controls.start_btn.clicked.connect(lambda _checked=False: self.start_recording_requested.emit())
+        self.recording_controls.stop_btn.clicked.connect(lambda _checked=False: self.stop_recording_requested.emit())
 
         self.settings_panel.start_requested.connect(self.start_requested.emit)
         self.settings_panel.stop_requested.connect(self.stop_requested.emit)
@@ -128,6 +140,11 @@ class MainWindow(QMainWindow):
             QFileDialog.Option.ShowDirsOnly,
         )
         return directory
+
+    def _open_config(self) -> None:
+        dialog = ConfigDialog(parent=self)
+        dialog.saved.connect(lambda _s: None)
+        dialog.exec()
 
     def set_status(self, message: str) -> None:
         self.statusBar().showMessage(message)

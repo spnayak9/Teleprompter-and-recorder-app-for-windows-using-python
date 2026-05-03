@@ -17,6 +17,7 @@ class RecordingFiles:
     project_root: Path
     audio_dir: Path
     subtitles_dir: Path
+    session_name: str
     timestamp: str
     wav_path: Path | None
     flac_path: Path | None
@@ -57,6 +58,7 @@ class RecordingFileManager:
             project_root=project_root,
             audio_dir=audio_dir,
             subtitles_dir=subtitles_dir,
+            session_name=base_name,
             timestamp=timestamp,
             wav_path=audio_dir / f"{base_name}.wav" if config.wants_wav else None,
             flac_path=audio_dir / f"{base_name}.flac" if config.wants_flac else None,

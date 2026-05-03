@@ -66,6 +66,9 @@ class TeleprompterController(QObject):
         self.recognizer_started_at: float | None = None
         self.recording_timer = QTimer(self)
         self.recording_timer.setInterval(250)
+        self.previewer = None
+        self.audio_recorder = None
+        self.ffmpeg_recorder = None
 
         self._connect_signals()
         self.refresh_microphones()
@@ -127,6 +130,49 @@ class TeleprompterController(QObject):
         self.settings = self.settings.updated(updates)
         self.config.save(self.settings)
         self.window.apply_settings(self.settings)
+
+        # Start/stop preview based on settings and recorder config
+        try:
+            from teleprompter_app.config_manager import ConfigManager as RecorderConfigManager
+            from teleprompter_app.preview import PreviewConfig, Previewer
+
+            recorder_mgr = RecorderConfigManager()
+            rsettings = recorder_mgr.load()
+            # map preview_resolution to width/height
+            mapping = {
+                "240p": (426, 240),
+                "360p": (640, 360),
+                "480p": (854, 480),
+                "720p": (1280, 720),
+            }
+            if getattr(self.settings, "use_camera_background", False) and rsettings.video_device:
+                size = mapping.get(getattr(self.settings, "preview_resolution", "360p"), (640, 360))
+                cfg = PreviewConfig(camera_name=rsettings.video_device, preview_size=size, desired_fps=rsettings.fps)
+                # stop existing previewer if settings changed
+                if self.previewer is not None:
+                    try:
+                        self.previewer.stop()
+                    except Exception:
+                        pass
+                self.previewer = Previewer(cfg, frame_callback=lambda f: self.window.preview_overlay.set_frame(f), fps_callback=lambda v: self.window.preview_overlay.set_fps(v))
+                try:
+                    self.previewer.start()
+                except Exception:
+                    logger.exception("Could not start previewer")
+                # update recording controls mode display
+                try:
+                    self.window.recording_controls.set_selected_mode(f"{rsettings.resolution} @{rsettings.fps} {rsettings.video_codec}")
+                except Exception:
+                    pass
+            else:
+                if self.previewer is not None:
+                    try:
+                        self.previewer.stop()
+                    except Exception:
+                        pass
+                    self.previewer = None
+        except Exception:
+            logger.debug("Preview integration not available or failed to start")
 
         if self.recognizer and self.recognizer.is_running:
             self.window.set_status("Settings saved. Restart listening to change microphone or model.")
@@ -241,7 +287,9 @@ class TeleprompterController(QObject):
         self.window.set_recording_directory(directory)
 
     def start_recording(self) -> None:
-        if self.recorder and self.recorder.is_running:
+        if (self.audio_recorder and getattr(self.audio_recorder, "is_running", False)) or (
+            self.ffmpeg_recorder and getattr(self.ffmpeg_recorder, "is_running", False)
+        ):
             self.window.set_recording_status("Already recording")
             return
 
@@ -253,7 +301,28 @@ class TeleprompterController(QObject):
         self.apply_settings({"recording_project_dir": directory})
         self.window.set_recording_directory(directory)
 
-        config = RecordingConfig(
+        # Determine requested recording mode from toolbar controls (if present)
+        mode_text = None
+        try:
+            mode_text = self.window.recording_controls.mode.currentText()
+        except Exception:
+            mode_text = None
+
+        # Map mode to booleans: (audio, video, srt)
+        mode_map = {
+            "record only srt": (False, False, True),
+            "record only audio": (True, False, False),
+            "record only video": (False, True, False),
+            "audio with srt": (True, False, True),
+            "video with srt": (False, True, True),
+            "audio and video only": (True, True, False),
+            "audio + video + srt": (True, True, True),
+        }
+
+        audio_enabled, video_enabled, srt_enabled = mode_map.get(mode_text or "", (True, False, True))
+
+        # Prepare an audio RecordingConfig for file naming and audio settings
+        audio_config = RecordingConfig(
             sample_rate=self.settings.recording_sample_rate,
             bit_depth=self.settings.recording_bit_depth,
             channels=self.settings.recording_channels,
@@ -261,43 +330,102 @@ class TeleprompterController(QObject):
         )
 
         try:
-            files = self.recording_files.prepare_session(Path(directory), config)
-            recorder = LosslessAudioRecorder()
-            recorder.start(
-                device_index=self.settings.microphone_index,
-                config=config,
-                files=files,
-            )
+            files = self.recording_files.prepare_session(Path(directory), audio_config)
+        except Exception as exc:
+            logger.exception("Could not prepare recording session")
+            QMessageBox.critical(self.window, "Could not prepare recording", str(exc))
+            return
+
+        # Create subtitle generator if requested (or always create for convenience)
+        self.subtitle_generator = SubtitleGenerator(files.srt_path, files.transcript_path) if srt_enabled or True else None
+
+        # Decide which recorder(s) to start
+        try:
+            # Use FFmpegRecorder for video (and combined audio+video)
+            from teleprompter_app.recorder import FFmpegRecorder, RecorderConfig as FFRecConfig
+            from teleprompter_app.config_manager import ConfigManager as RecorderConfigManager
+
+            rec_mgr = RecorderConfigManager()
+            rsettings = rec_mgr.load()
+
+            # If both audio and video requested, prefer a single ffmpeg process capturing both
+            if video_enabled:
+                out_file = files.audio_dir / f"{files.session_name}.{rsettings.container}"
+                ff_cfg = FFRecConfig(
+                    ffmpeg_path="ffmpeg",
+                    video_device=rsettings.video_device or None,
+                    audio_device=rsettings.audio_device or None,
+                    width=int(rsettings.resolution.split("x")[0]) if "x" in rsettings.resolution else None,
+                    height=int(rsettings.resolution.split("x")[1]) if "x" in rsettings.resolution else None,
+                    fps=rsettings.fps,
+                    pixel_format=None,
+                    video_codec=rsettings.video_codec,
+                    audio_codec=rsettings.audio_codec,
+                    audio_sample_rate=rsettings.sample_rate,
+                    audio_channels=rsettings.channels,
+                    output_container=rsettings.container,
+                    rtbufsize=rsettings.rtbufsize,
+                    thread_queue_size=rsettings.thread_queue_size,
+                    extra_ffmpeg_args=(rsettings.extra_ffmpeg_args.split() if rsettings.extra_ffmpeg_args else None),
+                )
+
+                self.ffmpeg_recorder = FFmpegRecorder(ff_cfg, out_file)
+                self.ffmpeg_recorder.start()
+
+                # If user also wants lossless separate audio, we skip starting LosslessAudioRecorder
+                self.audio_recorder = None
+
+            elif audio_enabled:
+                # audio-only path uses existing LosslessAudioRecorder (lossless PCM/FLAC)
+                recorder = LosslessAudioRecorder()
+                recorder.start(device_index=self.settings.microphone_index, config=audio_config, files=files)
+                self.audio_recorder = recorder
+                self.ffmpeg_recorder = None
+            else:
+                # srt-only: no recorder
+                self.audio_recorder = None
+                self.ffmpeg_recorder = None
+
         except Exception as exc:
             logger.exception("Could not start recording")
             self.window.set_recording(False, "Recording failed")
             QMessageBox.critical(self.window, "Could not start recording", str(exc))
             return
 
-        self.recorder = recorder
         self.current_recording_files = files
-        self.subtitle_generator = SubtitleGenerator(files.srt_path, files.transcript_path)
-        self.recording_started_at = recorder.started_at or time.monotonic()
+        # mark recording start time: prefer audio recorder's started time
+        if self.audio_recorder is not None and getattr(self.audio_recorder, "started_at", None):
+            self.recording_started_at = self.audio_recorder.started_at
+        else:
+            self.recording_started_at = time.monotonic()
+
         self.recording_timer.start()
         self.window.set_recording(True, "Recording 00:00")
-        self.window.set_status(f"Recording raw audio to {files.audio_dir}")
+        self.window.set_status(f"Recording session {files.session_name} in {files.project_root}")
 
         if not (self.recognizer and self.recognizer.is_running):
             self.start_recognition()
 
     def stop_recording(self) -> None:
-        if not self.recorder:
-            self.window.set_recording(False, "Idle")
-            return
-
+        # Stop any running audio or ffmpeg recorders
+        audio_result = None
         try:
-            result = self.recorder.stop()
-        except Exception as exc:
-            logger.exception("Could not stop recording cleanly")
-            QMessageBox.warning(self.window, "Recording error", str(exc))
-            result = None
+            if self.audio_recorder is not None:
+                try:
+                    audio_result = self.audio_recorder.stop()
+                except Exception:
+                    logger.exception("Error stopping audio recorder")
+                finally:
+                    self.audio_recorder = None
+
+            if self.ffmpeg_recorder is not None:
+                try:
+                    self.ffmpeg_recorder.stop()
+                except Exception:
+                    logger.exception("Error stopping ffmpeg recorder")
+                finally:
+                    self.ffmpeg_recorder = None
         finally:
-            self.recorder = None
             self.recording_timer.stop()
 
         if self.subtitle_generator is not None:
@@ -309,9 +437,9 @@ class TeleprompterController(QObject):
 
         if self.current_recording_files is not None:
             status = f"Recording saved in {self.current_recording_files.project_root}"
-            if result is not None and result.dropped_chunks:
-                status += f" ({result.dropped_chunks} audio buffers dropped)"
-            if result is not None and result.wav_flac_match is False:
+            if audio_result is not None and getattr(audio_result, "dropped_chunks", 0):
+                status += f" ({audio_result.dropped_chunks} audio buffers dropped)"
+            if audio_result is not None and getattr(audio_result, "wav_flac_match", True) is False:
                 status += " (WAV/FLAC verification failed)"
             self.window.set_status(status)
             self.current_recording_files = None

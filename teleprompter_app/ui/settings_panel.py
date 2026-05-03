@@ -121,6 +121,15 @@ class SettingsPanel(QWidget):
         recording_group = QGroupBox("Recording")
         recording_form = QFormLayout(recording_group)
 
+        background_group = QGroupBox("Background")
+        background_form = QFormLayout(background_group)
+        self.use_camera_background = QCheckBox("Use camera as background")
+        self.preview_resolution = QComboBox()
+        self.preview_resolution.addItem("240p", "240p")
+        self.preview_resolution.addItem("360p", "360p")
+        self.preview_resolution.addItem("480p", "480p")
+        self.preview_resolution.addItem("720p", "720p")
+
         self.recording_dir = QLineEdit()
         self.recording_dir.setReadOnly(True)
         self.recording_dir.setPlaceholderText("Choose project folder before recording")
@@ -174,6 +183,7 @@ class SettingsPanel(QWidget):
 
         root.addWidget(text_group)
         root.addWidget(render_group)
+        root.addWidget(background_group)
         root.addWidget(input_group)
         root.addWidget(audio_group)
         root.addWidget(recording_group)
@@ -190,6 +200,8 @@ class SettingsPanel(QWidget):
         self.scroll_speed.valueChanged.connect(lambda _value: self._emit_settings())
         self.input_mode.currentIndexChanged.connect(lambda _index: self._emit_settings())
         self.microphone.currentIndexChanged.connect(lambda _index: self._emit_settings())
+        self.use_camera_background.toggled.connect(lambda _checked: self._emit_settings())
+        self.preview_resolution.currentIndexChanged.connect(lambda _index: self._emit_settings())
         self.microphone.currentIndexChanged.connect(lambda _index: self._on_microphone_selection_changed())
         self.model_path.editingFinished.connect(self._emit_settings)
         self.recording_format.currentIndexChanged.connect(lambda _index: self._emit_settings())
@@ -221,6 +233,9 @@ class SettingsPanel(QWidget):
         self._set_combo_by_data(self.recording_channels, settings.recording_channels)
         self._set_button_color(self.text_color_button, settings.text_color, "Text color")
         self._set_button_color(self.highlight_color_button, settings.highlight_color, "Highlight color")
+
+        self.use_camera_background.setChecked(getattr(settings, "use_camera_background", False))
+        self._set_combo_by_data(self.preview_resolution, getattr(settings, "preview_resolution", "360p"))
 
         index = self.input_mode.findData(settings.input_mode)
         self.input_mode.setCurrentIndex(index if index >= 0 else 0)
@@ -374,6 +389,8 @@ class SettingsPanel(QWidget):
                 "recording_sample_rate": int(self.recording_sample_rate.currentData()),
                 "recording_bit_depth": int(self.recording_bit_depth.currentData()),
                 "recording_channels": int(self.recording_channels.currentData()),
+                "use_camera_background": bool(self.use_camera_background.isChecked()),
+                "preview_resolution": str(self.preview_resolution.currentData()),
             }
         )
 
