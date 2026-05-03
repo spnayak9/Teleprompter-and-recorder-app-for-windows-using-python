@@ -13,6 +13,7 @@ from teleprompter_app.ui.teleprompter_view import TeleprompterView
 from teleprompter_app.ui_main import PreviewOverlay, MainToolbarControls
 from teleprompter_app.utils.config import AppSettings
 from teleprompter_app.ui_config import ConfigDialog
+from teleprompter_app.ffmpeg_probe import SystemProbe
 
 
 class MainWindow(QMainWindow):
@@ -32,9 +33,10 @@ class MainWindow(QMainWindow):
     select_recording_dir_requested = Signal()
     config_saved = Signal()
 
-    def __init__(self, settings: AppSettings) -> None:
+    def __init__(self, settings: AppSettings, system_profile: SystemProbe) -> None:
         super().__init__()
         self.settings = settings
+        self.system_profile = system_profile
         self.setWindowTitle("AI Teleprompter with Real-Time Speech Highlighting")
         self.resize(1280, 820)
 
@@ -153,7 +155,7 @@ class MainWindow(QMainWindow):
         return directory
 
     def _open_config(self) -> None:
-        dialog = ConfigDialog(parent=self)
+        dialog = ConfigDialog(self.system_profile, parent=self)
         dialog.saved.connect(lambda s: self.config_saved.emit())
         dialog.exec()
 

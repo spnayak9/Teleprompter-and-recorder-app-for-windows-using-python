@@ -22,6 +22,7 @@ from teleprompter_app.speech.recognizer import RecognitionResult
 from teleprompter_app.speech.vosk_engine import VoskSpeechRecognizer
 from teleprompter_app.ui.main_window import MainWindow
 from teleprompter_app.utils.config import AppSettings, ConfigManager
+from teleprompter_app.ffmpeg_probe import probe_system, SystemProbe
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,12 @@ class TeleprompterController(QObject):
         self.current_recording_files: RecordingFiles | None = None
         self.subtitle_generator: SubtitleGenerator | None = None
         self.recording_started_at: float | None = None
+        
+        # Phase 1: System Profile Single Source of Truth
+        logger.info("Probing system capabilities (this may take a few seconds)...")
+        self.system_profile = probe_system()
 
-        self.window = MainWindow(self.settings)
+        self.window = MainWindow(self.settings, self.system_profile)
         self.recognition_bridge = RecognitionBridge()
         self.recognizer: VoskSpeechRecognizer | None = None
         self.recognizer_started_at: float | None = None
@@ -159,7 +164,15 @@ class TeleprompterController(QObject):
             }
             if getattr(self.settings, "use_camera_background", False) and rsettings.video_device:
                 size = mapping.get(getattr(self.settings, "preview_resolution", "360p"), (640, 360))
-                cfg = PreviewConfig(camera_name=rsettings.video_device, preview_size=size, desired_fps=rsettings.fps)
+                
+                device_idx = 0
+                if self.system_profile and getattr(self.system_profile, "cameras", None):
+                    for i, cam in enumerate(self.system_profile.cameras):
+                        if cam.name == rsettings.video_device:
+                            device_idx = i
+                            break
+                            
+                cfg = PreviewConfig(device_idx=device_idx, preview_size=size, desired_fps=rsettings.fps)
                 # stop existing previewer if settings changed
                 if self.previewer is not None:
                     try:
@@ -358,6 +371,28 @@ class TeleprompterController(QObject):
                 mode_text = getattr(rsettings, "recording_mode", None)
         except Exception:
             rsettings = None
+
+        # Phase 10: Validation Engine
+        # Prevent recording if the active configuration violates system capabilities
+        if rsettings and mode_text and ("video" in mode_text.lower() or "main view" in mode_text.lower()):
+            if not getattr(rsettings, "video_device", None):
+                QMessageBox.warning(self.window, "Validation Error", "No camera selected in configuration. Please Configure Video.")
+                return
+            
+            valid_camera = False
+            if self.system_profile and getattr(self.system_profile, "cameras", None):
+                for cam in self.system_profile.cameras:
+                    if cam.name == rsettings.video_device:
+                        valid_camera = True
+                        break
+            if not valid_camera:
+                QMessageBox.warning(self.window, "Validation Error", f"Selected camera '{rsettings.video_device}' is not currently plugged in or available.")
+                return
+
+        if rsettings and mode_text and "audio" in mode_text.lower():
+            if not getattr(rsettings, "audio_device", None):
+                QMessageBox.warning(self.window, "Validation Error", "No microphone selected in configuration. Please Configure Audio.")
+                return
 
         # Map mode to booleans: (audio, video, srt)
         mode_map = {

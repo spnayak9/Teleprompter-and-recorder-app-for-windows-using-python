@@ -36,26 +36,18 @@ class ConfigDialog(QDialog):
     ffmpeg_probed = Signal(object)
     system_probed = Signal(object)
 
-    def __init__(self, config_path: Path | None = None, parent=None) -> None:
+    def __init__(self, system_profile: SystemProbe, config_path: Path | None = None, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Recording Configuration")
         self.manager = ConfigManager(config_path)
         self.settings = self.manager.load()
         # runtime caches
-        self._profile: Optional[SystemProfile] = None
-        self._system_probe: Optional[SystemProbe] = None
-        self._ffmpeg_caps: Optional[FFmpegCapabilities] = None
+        self._profile: SystemProbe = system_profile
+        self._system_probe = system_profile
+        self._ffmpeg_caps = system_profile.ffmpeg
 
         self._build_ui()
-
-        # start ffmpeg capability probe and system probe in background and connect handlers
-        try:
-            self.ffmpeg_probed.connect(self._on_ffmpeg_probed)
-            threading.Thread(target=self._start_ffmpeg_probe, daemon=True).start()
-            self.system_probed.connect(self._on_system_probed)
-            threading.Thread(target=self._start_system_probe, daemon=True).start()
-        except Exception:
-            pass
+        self._populate_initial_data()
 
     def _build_ui(self) -> None:
         self.tabs = QTabWidget()
@@ -105,18 +97,14 @@ class ConfigDialog(QDialog):
         # Device options populate natively into the configuration
 
 
-        # populate device lists from profile file if available (fallback)
+        # populate device lists from passed profile
         try:
-            profile_path = Path.cwd() / "full_system_profile.txt"
-            if profile_path.exists():
-                profile = load_profile_file(profile_path)
-                self._profile = profile
-                # video devices
-                self.video_device.addItem("", "")
-                for cam in profile.cameras:
+            self.video_device.addItem("", "")
+            if self._profile:
+                for cam in self._profile.cameras:
                     self.video_device.addItem(cam.name, cam.name)
         except Exception:
-            self._profile = None
+            pass
 
         try:
             mm = MicrophoneManager()
@@ -138,6 +126,16 @@ class ConfigDialog(QDialog):
         path = QFileDialog.getExistingDirectory(self, "Select device (placeholder)")
         if path:
             line.setText(path)
+
+    def _populate_initial_data(self) -> None:
+        # Pre-select video device if it exists in settings
+        pref = getattr(self.settings, "video_device", None)
+        if pref:
+            idx = self.video_device.findText(pref)
+            if idx >= 0:
+                self.video_device.setCurrentIndex(idx)
+        # Populate resolutions from system probe if available
+        self._on_camera_changed()
 
     def _build_video_tab(self) -> None:
         form = QFormLayout(self._video_tab)

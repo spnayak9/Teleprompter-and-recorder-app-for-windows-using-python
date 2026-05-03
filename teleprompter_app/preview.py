@@ -30,7 +30,7 @@ FPSCallback = Callable[[float], None]
 
 @dataclass
 class PreviewConfig:
-    camera_name: str
+    device_idx: int
     preview_size: Tuple[int, int] = (640, 360)
     backend: int = cv2.CAP_DSHOW if cv2 is not None else 0
     desired_fps: Optional[float] = None
@@ -63,31 +63,10 @@ class Previewer:
         cfg = self.config
         cap = None
         try:
-            device_idx = 0
-            try:
-                import subprocess
-                import re
-                out = subprocess.run(["ffmpeg", "-list_devices", "true", "-f", "dshow", "-i", "dummy"], capture_output=True, text=True, errors="ignore").stderr
-                video_devs = []
-                for ln in out.splitlines():
-                    if 'DirectShow audio devices' in ln or 'Audio devices' in ln:
-                        break
-                    m = re.search(r'"(.+?)"', ln)
-                    if m:
-                        video_devs.append(m.group(1))
-                if cfg.camera_name in video_devs:
-                    device_idx = video_devs.index(cfg.camera_name)
-                else:
-                    try:
-                        device_idx = int(cfg.camera_name)
-                    except ValueError:
-                        pass
-            except Exception:
-                pass
-
+            device_idx = cfg.device_idx
             cap = cv2.VideoCapture(device_idx, cfg.backend)
             if not cap.isOpened():
-                raise RuntimeError(f"Could not open camera index {device_idx} for {cfg.camera_name}")
+                raise RuntimeError(f"Could not open camera index {device_idx}")
 
             if cfg.desired_fps:
                 cap.set(cv2.CAP_PROP_FPS, float(cfg.desired_fps))
