@@ -122,20 +122,9 @@ class SettingsPanel(QWidget):
         audio_form.addRow("Microphone", mic_row)
         audio_form.addRow("Vosk model", model_row)
 
-        # Background group
-        background_group = QGroupBox("Background")
-        background_form = QFormLayout(background_group)
-        self.use_camera_background = QCheckBox("Use camera as background")
-        self.preview_resolution = QComboBox()
-        self.preview_resolution.addItem("240p", "240p")
-        self.preview_resolution.addItem("360p", "360p")
-        self.preview_resolution.addItem("480p", "480p")
-        self.preview_resolution.addItem("720p", "720p")
-
-        # background color selector
-        self.background_color_button = QPushButton()
-        self.background_color_button.setToolTip("Choose background color")
-
+        # Project group
+        project_group = QGroupBox("Project")
+        project_form = QFormLayout(project_group)
         self.recording_dir = QLineEdit()
         self.recording_dir.setReadOnly(True)
         self.recording_dir.setPlaceholderText("Choose project folder before recording")
@@ -143,10 +132,7 @@ class SettingsPanel(QWidget):
         recording_dir_row = QHBoxLayout()
         recording_dir_row.addWidget(self.recording_dir, 1)
         recording_dir_row.addWidget(self.select_recording_dir)
-        # show project directory in background group
-        background_form.addRow("Project", recording_dir_row)
-        background_form.addRow("Preview resolution", self.preview_resolution)
-        background_form.addRow("Background color", self.background_color_button)
+        project_form.addRow("Directory", recording_dir_row)
 
         controls = QGroupBox("Session")
         controls_layout = QHBoxLayout(controls)
@@ -158,7 +144,7 @@ class SettingsPanel(QWidget):
 
         root.addWidget(text_group)
         root.addWidget(render_group)
-        root.addWidget(background_group)
+        root.addWidget(project_group)
         root.addWidget(input_group)
         root.addWidget(audio_group)
         root.addWidget(controls)
@@ -174,9 +160,7 @@ class SettingsPanel(QWidget):
         self.scroll_speed.valueChanged.connect(lambda _value: self._emit_settings())
         self.input_mode.currentIndexChanged.connect(lambda _index: self._emit_settings())
         self.microphone.currentIndexChanged.connect(lambda _index: self._emit_settings())
-        self.use_camera_background.toggled.connect(lambda _checked: self._emit_settings())
-        self.preview_resolution.currentIndexChanged.connect(lambda _index: self._emit_settings())
-        self.background_color_button.clicked.connect(lambda _checked=False: self._choose_color("background_color"))
+
         self.microphone.currentIndexChanged.connect(lambda _index: self._on_microphone_selection_changed())
         self.model_path.editingFinished.connect(self._emit_settings)
         # recording format controls moved to Configure dialog
@@ -201,27 +185,7 @@ class SettingsPanel(QWidget):
         self._set_button_color(self.text_color_button, settings.text_color, "Text color")
         self._set_button_color(self.highlight_color_button, settings.highlight_color, "Highlight color")
 
-        self.use_camera_background.setChecked(getattr(settings, "use_camera_background", False))
-        self._set_combo_by_data(self.preview_resolution, getattr(settings, "preview_resolution", "360p"))
-        # attempt to populate preview resolutions from system profile if available
-        try:
-            profile_path = Path.cwd() / "full_system_profile.txt"
-            if profile_path.exists():
-                profile = load_profile_file(profile_path)
-                # gather unique resolutions
-                res = sorted({f"{m.width}x{m.height}" for cam in profile.cameras for m in cam.modes})
-                if res:
-                    self.preview_resolution.clear()
-                    for r in res:
-                        # normalize to simple labels like 720p when height available
-                        h = int(r.split("x")[1]) if "x" in r else 0
-                        label = f"{h}p" if h else r
-                        self.preview_resolution.addItem(label, r)
-        except Exception:
-            pass
 
-        # background color button
-        self._set_button_color(self.background_color_button, getattr(settings, "background_color", "#000000"), "Background color")
 
         index = self.input_mode.findData(settings.input_mode)
         self.input_mode.setCurrentIndex(index if index >= 0 else 0)
@@ -372,8 +336,6 @@ class SettingsPanel(QWidget):
                 "microphone_index": int(microphone_index) if microphone_index is not None else -1,
                 "vosk_model_path": self.model_path.text().strip(),
                 "recording_project_dir": self.recording_dir.text().strip(),
-                "use_camera_background": bool(self.use_camera_background.isChecked()),
-                "preview_resolution": str(self.preview_resolution.currentData()),
             }
         )
 

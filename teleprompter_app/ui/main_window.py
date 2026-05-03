@@ -10,7 +10,7 @@ from teleprompter_app.audio.mic_manager import MicrophoneDevice
 from teleprompter_app.core.tokenizer import Token
 from teleprompter_app.ui.settings_panel import SettingsPanel
 from teleprompter_app.ui.teleprompter_view import TeleprompterView
-from teleprompter_app.ui_main import PreviewOverlay
+from teleprompter_app.ui_main import PreviewOverlay, MainToolbarControls
 from teleprompter_app.utils.config import AppSettings
 from teleprompter_app.ui_config import ConfigDialog
 
@@ -26,6 +26,9 @@ class MainWindow(QMainWindow):
     microphones_refresh_requested = Signal()
     start_recording_requested = Signal()
     stop_recording_requested = Signal()
+    recording_mode_changed = Signal(str)
+    background_mode_changed = Signal(str)
+    preview_resolution_changed = Signal(str)
     select_recording_dir_requested = Signal()
     config_saved = Signal()
 
@@ -71,7 +74,11 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.start_action)
         toolbar.addAction(self.stop_action)
         toolbar.addAction(self.rewind_action)
-        # Recording controls moved to Configure dialog
+        
+        # Add Main Recording & Preview Controls
+        toolbar.addSeparator()
+        self.main_controls = MainToolbarControls(self)
+        toolbar.addWidget(self.main_controls)
 
     def _connect_signals(self) -> None:
         self.open_action.triggered.connect(lambda _checked=False: self._choose_script())
@@ -84,8 +91,14 @@ class MainWindow(QMainWindow):
         self.settings_panel.stop_requested.connect(self.stop_requested.emit)
         self.settings_panel.settings_changed.connect(self.settings_changed.emit)
         self.settings_panel.refresh_microphones_requested.connect(self.microphones_refresh_requested.emit)
-        self.settings_panel.start_recording_requested.connect(self.start_recording_requested.emit)
-        self.settings_panel.stop_recording_requested.connect(self.stop_recording_requested.emit)
+        
+        # Connect new MainToolbarControls signals
+        self.main_controls.start_recording_requested.connect(self.start_recording_requested.emit)
+        self.main_controls.stop_recording_requested.connect(self.stop_recording_requested.emit)
+        self.main_controls.mode_changed.connect(self.recording_mode_changed.emit)
+        self.main_controls.background_changed.connect(self.background_mode_changed.emit)
+        self.main_controls.preview_resolution_changed.connect(self.preview_resolution_changed.emit)
+        
         self.settings_panel.select_recording_dir_requested.connect(self.select_recording_dir_requested.emit)
 
     def _choose_script(self) -> None:
@@ -122,6 +135,7 @@ class MainWindow(QMainWindow):
 
     def set_recording(self, recording: bool, status: str = "") -> None:
         self.settings_panel.set_recording(recording, status)
+        self.main_controls.set_recording_state(recording)
 
     def set_recording_status(self, status: str) -> None:
         self.settings_panel.set_recording_status(status)

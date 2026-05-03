@@ -86,6 +86,10 @@ class TeleprompterController(QObject):
         self.window.stop_recording_requested.connect(self.stop_recording)
         self.window.select_recording_dir_requested.connect(self.select_recording_directory)
         self.window.config_saved.connect(lambda: self._on_recorder_config_saved())
+        
+        self.window.recording_mode_changed.connect(self._on_recording_mode_changed)
+        self.window.background_mode_changed.connect(self._on_background_mode_changed)
+        self.window.preview_resolution_changed.connect(self._on_preview_resolution_changed)
 
         self.recognition_bridge.result_received.connect(self.handle_recognition_result)
         self.recognition_bridge.status_changed.connect(self.window.set_status)
@@ -129,6 +133,15 @@ class TeleprompterController(QObject):
         self.settings = self.settings.updated(updates)
         self.config.save(self.settings)
         self.window.apply_settings(self.settings)
+        
+        # sync main controls if setting changed programmatically
+        try:
+            if "use_camera_background" in updates:
+                idx = self.window.main_controls.background_selector.findData("camera" if updates["use_camera_background"] else "color")
+                if idx >= 0:
+                    self.window.main_controls.background_selector.setCurrentIndex(idx)
+        except Exception:
+            pass
 
         # Start/stop preview based on settings and recorder config
         try:
@@ -319,10 +332,10 @@ class TeleprompterController(QObject):
         self.apply_settings({"recording_project_dir": directory})
         self.window.set_recording_directory(directory)
 
-        # Determine requested recording mode from toolbar controls (if present)
+        # Determine requested recording mode from toolbar controls
         mode_text = None
         try:
-            mode_text = self.window.recording_controls.mode.currentText()
+            mode_text = self.window.main_controls.mode.currentText()
         except Exception:
             # fallback to persisted recorder config
             try:
@@ -513,3 +526,20 @@ class TeleprompterController(QObject):
         self.stop_recording()
         self.stop_recognition()
         self.config.save(self.settings)
+
+    def _on_recording_mode_changed(self, mode: str) -> None:
+        try:
+            from teleprompter_app.config_manager import ConfigManager as RecorderConfigManager
+            rec_mgr = RecorderConfigManager()
+            rsettings = rec_mgr.load()
+            rsettings.recording_mode = mode
+            rec_mgr.save(rsettings)
+        except Exception:
+            pass
+
+    def _on_background_mode_changed(self, bg_type: str) -> None:
+        use_camera = (bg_type == "camera")
+        self.apply_settings({"use_camera_background": use_camera})
+
+    def _on_preview_resolution_changed(self, res: str) -> None:
+        self.apply_settings({"preview_resolution": res})

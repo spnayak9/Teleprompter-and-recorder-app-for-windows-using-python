@@ -9,7 +9,7 @@ application wiring code (they are provided as reusable components).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QPixmap, QImage, QColor, QFont
 from PySide6.QtWidgets import (
     QLabel,
@@ -100,9 +100,18 @@ class PreviewOverlay(QWidget):
         self.fps_label.move(self.width() - self.fps_label.width() - 12, 8)
 
 
-class RecordingControls(QGroupBox):
+class MainToolbarControls(QWidget):
+    start_recording_requested = Signal()
+    stop_recording_requested = Signal()
+    mode_changed = Signal(str)
+    background_changed = Signal(str)
+    preview_resolution_changed = Signal(str)
+
     def __init__(self, parent=None) -> None:
-        super().__init__("Recording")
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
         self.mode = QComboBox()
         options = [
             "record only srt",
@@ -115,17 +124,39 @@ class RecordingControls(QGroupBox):
         ]
         for o in options:
             self.mode.addItem(o)
+            
+        self.background_selector = QComboBox()
+        self.background_selector.addItem("Color", "color")
+        self.background_selector.addItem("Camera Preview", "camera")
+        
+        self.preview_res_selector = QComboBox()
+        self.preview_res_selector.addItem("240p", "240p")
+        self.preview_res_selector.addItem("360p", "360p")
+        self.preview_res_selector.addItem("480p", "480p")
+        self.preview_res_selector.addItem("720p", "720p")
+        self.preview_res_selector.setCurrentText("360p")
 
         self.start_btn = QPushButton("Start Recording")
         self.stop_btn = QPushButton("Stop Recording")
         self.stop_btn.setEnabled(False)
 
-        layout = QHBoxLayout(self)
+        layout.addWidget(QLabel("Mode:"))
         layout.addWidget(self.mode)
+        layout.addWidget(QLabel("Background:"))
+        layout.addWidget(self.background_selector)
+        layout.addWidget(QLabel("Preview Res:"))
+        layout.addWidget(self.preview_res_selector)
         layout.addWidget(self.start_btn)
         layout.addWidget(self.stop_btn)
-        self.mode_label = QLabel("")
-        layout.addWidget(self.mode_label)
+        
+        # Connect internal signals
+        self.start_btn.clicked.connect(lambda _checked=False: self.start_recording_requested.emit())
+        self.stop_btn.clicked.connect(lambda _checked=False: self.stop_recording_requested.emit())
+        self.mode.currentTextChanged.connect(self.mode_changed.emit)
+        self.background_selector.currentIndexChanged.connect(lambda _idx: self.background_changed.emit(str(self.background_selector.currentData())))
+        self.preview_res_selector.currentTextChanged.connect(self.preview_resolution_changed.emit)
 
-    def set_selected_mode(self, text: str) -> None:
-        self.mode_label.setText(text)
+    def set_recording_state(self, is_recording: bool) -> None:
+        self.start_btn.setEnabled(not is_recording)
+        self.stop_btn.setEnabled(is_recording)
+        self.mode.setEnabled(not is_recording)

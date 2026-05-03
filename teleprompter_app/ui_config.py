@@ -92,18 +92,7 @@ class ConfigDialog(QDialog):
         layout.addWidget(cancel_btn)
 
         # initialize dynamic fields from loaded settings
-        try:
-            self.use_camera_background.setChecked(getattr(self.settings, "use_camera_background", False))
-        except Exception:
-            pass
-        try:
-            pref = getattr(self.settings, "preview_resolution", None)
-            if pref:
-                idx = self.preview_resolution.findData(pref)
-                if idx >= 0:
-                    self.preview_resolution.setCurrentIndex(idx)
-        except Exception:
-            pass
+        pass
 
     def _build_device_tab(self) -> None:
         form = QFormLayout(self._device_tab)
@@ -113,14 +102,8 @@ class ConfigDialog(QDialog):
         form.addRow("Camera device", self.video_device)
         form.addRow("Microphone device", self.audio_device)
 
-        # preview / background controls
-        self.use_camera_background = QCheckBox("Use camera as background")
-        self.preview_resolution = QComboBox()
-        self.preview_resolution.addItem("360p", "360p")
-        self.preview_resolution.addItem("480p", "480p")
-        self.preview_resolution.addItem("720p", "720p")
-        form.addRow(self.use_camera_background)
-        form.addRow("Preview resolution", self.preview_resolution)
+        # Device options populate natively into the configuration
+
 
         # populate device lists from profile file if available (fallback)
         try:
@@ -275,21 +258,6 @@ class ConfigDialog(QDialog):
         self.output_dir = QLineEdit(self.settings.output_dir)
         browse = QPushButton("Browse")
         browse.clicked.connect(self._choose_output_dir)
-        # recording mode control moved into configuration dialog
-        self.recording_mode = QComboBox()
-        modes = [
-            "record main view",
-            "record only srt",
-            "record only audio",
-            "record only video",
-            "audio with srt",
-            "video with srt",
-            "audio and video only",
-            "audio + video + srt",
-        ]
-        for m in modes:
-            self.recording_mode.addItem(m, m)
-        form.addRow("Recording mode", self.recording_mode)
         form.addRow("Container", self.container)
         form.addRow("Output dir", self.output_dir)
         form.addRow("", browse)
@@ -556,9 +524,6 @@ class ConfigDialog(QDialog):
             output_dir=self.output_dir.text().strip() or self.settings.output_dir,
             naming_pattern=self.settings.naming_pattern,
             extra_ffmpeg_args=self.extra_args.text().strip(),
-            recording_mode=str(self.recording_mode.currentData() or self.recording_mode.currentText()),
-            use_camera_background=bool(self.use_camera_background.isChecked()),
-            preview_resolution=str(self.preview_resolution.currentText() or "360p"),
         )
 
         self.manager.save(s)
