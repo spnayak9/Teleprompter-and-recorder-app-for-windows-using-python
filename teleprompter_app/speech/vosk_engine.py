@@ -167,7 +167,11 @@ class VoskSpeechRecognizer(SpeechRecognizer):
                 )
                 on_status(f"Listening with {chunk_label} ({mode})...")
 
-            for chunk in self._stream.chunks(self._stop_event):
+            stream = self._stream
+            if stream is None:
+                return
+
+            for chunk in stream.chunks(self._stop_event):
                 chunk = resampler.convert(chunk)
                 if not chunk:
                     continue

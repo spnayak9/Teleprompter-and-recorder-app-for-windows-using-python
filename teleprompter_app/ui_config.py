@@ -159,28 +159,30 @@ class ConfigDialog(QDialog):
     def _build_video_tab(self) -> None:
         form = QFormLayout(self._video_tab)
         self.resolution = QComboBox()
-        # resolution will be populated reactively when a camera is chosen
         self.resolution.addItem("", "")
-        self.fps = QSpinBox()
-        self.fps.setRange(1, 240)
-        self.fps.setValue(self.settings.fps)
-        # video codec and pixel format will be populated from ffmpeg probe
-        self.video_codec = QComboBox()
-        self.video_codec.addItem("", "")
+        self.fps = QComboBox()
+        self.fps.addItem("", "")
         self.pixel_format = QComboBox()
         self.pixel_format.addItem("", "")
+        self.video_codec = QComboBox()
+        self.video_codec.addItem("", "")
+        
         self.lossless = QCheckBox()
         self.lossless.setChecked(self.settings.lossless)
+        
         form.addRow("Resolution", self.resolution)
         form.addRow("FPS", self.fps)
-        form.addRow("Video codec", self.video_codec)
         form.addRow("Pixel format", self.pixel_format)
+        form.addRow("Video codec", self.video_codec)
         form.addRow("Lossless", self.lossless)
 
-        # wire camera->resolution dependency
+        # wire exact dependency chain
         try:
-            self.video_device.currentIndexChanged.connect(lambda _i: self._on_video_device_changed())
-            self.resolution.currentIndexChanged.connect(lambda _i: self._on_resolution_changed())
+            self.video_device.currentIndexChanged.connect(self._on_video_device_changed)
+            self.resolution.currentIndexChanged.connect(self._on_resolution_changed)
+            self.fps.currentIndexChanged.connect(self._on_fps_changed)
+            self.pixel_format.currentIndexChanged.connect(self._on_format_changed)
+            self.video_codec.currentIndexChanged.connect(self._validate_selection)
         except Exception:
             pass
 
@@ -247,13 +249,13 @@ class ConfigDialog(QDialog):
 
     def _build_perf_tab(self) -> None:
         form = QFormLayout(self._perf_tab)
-        # suggest rtbuf sizes; refined when profile is loaded
         self.rtbuf = QComboBox()
-        for s in ("50M", "100M", "200M", "500M", "1G"):
+        for s in ("50M", "100M", "200M", "500M", "1G", "2G"):
             self.rtbuf.addItem(s, s)
-        self.thread_q = QSpinBox()
-        self.thread_q.setRange(1, 32768)
-        self.thread_q.setValue(self.settings.thread_queue_size)
+        self.thread_q = QComboBox()
+        for q in ("128", "256", "512", "1024", "2048", "4096"):
+            self.thread_q.addItem(q, int(q))
+            
         self.hw_accel = QCheckBox()
         self.hw_accel.setChecked(self.settings.hw_accel)
         form.addRow("Buffer size", self.rtbuf)
@@ -390,81 +392,113 @@ class ConfigDialog(QDialog):
 
     def _on_video_device_changed(self) -> None:
         name = self.video_device.currentData()
-        profiles = None
-        if getattr(self, "_system_probe", None) and self._system_probe.cameras:
-            profiles = self._system_probe.cameras
-        elif getattr(self, "_profile", None) and self._profile.cameras:
-            profiles = self._profile.cameras
-        if not name or not profiles:
-            self.resolution.clear()
-            self.resolution.addItem("", "")
-            return
-        cam = next((c for c in profiles if c.name == name), None)
-        if not cam:
-            self.resolution.clear()
-            self.resolution.addItem("", "")
-            return
-        res_set = {f"{m.width}x{m.height}" for m in cam.modes}
         self.resolution.clear()
         self.resolution.addItem("", "")
-        for r in sorted(res_set):
+        self.fps.clear()
+        self.pixel_format.clear()
+        self.video_codec.clear()
+        
+        if not name or not self._system_probe or not self._system_probe.cameras:
+            return
+            
+        cam = next((c for c in self._system_probe.cameras if c.name == name), None)
+        if not cam:
+            return
+            
+        res_set = {f"{m.width}x{m.height}" for m in cam.modes}
+        for r in sorted(res_set, key=lambda x: int(x.split('x')[0]) * int(x.split('x')[1]), reverse=True):
             self.resolution.addItem(r, r)
+            
         self._validate_selection()
 
     def _on_resolution_changed(self) -> None:
-        res = self.resolution.currentData() or self.resolution.currentText()
+        res = self.resolution.currentData()
         name = self.video_device.currentData()
-        if not res or not name or not self._profile:
+        self.fps.clear()
+        self.pixel_format.clear()
+        self.video_codec.clear()
+        
+        if not res or not name or not self._system_probe:
             return
-        parts = res.split("x")
-        if len(parts) != 2:
-            return
+            
         try:
-            w, h = int(parts[0]), int(parts[1])
+            w, h = map(int, res.split("x"))
         except Exception:
             return
-        cam = next((c for c in self._profile.cameras if c.name == name), None)
+            
+        cam = next((c for c in self._system_probe.cameras if c.name == name), None)
         if not cam:
             return
-        mode = next((m for m in cam.modes if getattr(m, 'width', None) == w and getattr(m, 'height', None) == h), None)
+            
+        # Get all modes that match this resolution
+        matching_modes = [m for m in cam.modes if m.width == w and m.height == h]
+        fps_set = set()
+        for m in matching_modes:
+            if m.fps > 0:
+                fps_set.add(m.fps)
+                
+        self.fps.addItem("", "")
+        for f in sorted(fps_set, reverse=True):
+            self.fps.addItem(f"{f:.1f}", f)
+            
+        self._validate_selection()
+
+    def _on_fps_changed(self) -> None:
+        fps_val = self.fps.currentData()
+        res = self.resolution.currentData()
+        name = self.video_device.currentData()
+        self.pixel_format.clear()
+        self.video_codec.clear()
+        
+        if not fps_val or not res or not name or not self._system_probe:
+            return
+            
+        try:
+            w, h = map(int, res.split("x"))
+        except Exception:
+            return
+            
+        cam = next((c for c in self._system_probe.cameras if c.name == name), None)
+        if not cam:
+            return
+            
+        # Get matching mode for resolution + fps
+        mode = next((m for m in cam.modes if m.width == w and m.height == h and abs(m.fps - float(fps_val)) < 0.1), None)
         if not mode:
             return
-        # support both profile CameraMode (max_fps) and probe CameraMode (fps)
-        raw_fps = getattr(mode, 'max_fps', None)
-        if raw_fps is None:
-            raw_fps = getattr(mode, 'fps', 0)
-        try:
-            max_fps = max(1, int(round(raw_fps)))
-        except Exception:
-            max_fps = 30
-        try:
-            self.fps.setRange(1, max_fps)
-            if self.settings.fps <= max_fps:
-                self.fps.setValue(self.settings.fps)
-            else:
-                self.fps.setValue(max_fps)
-        except Exception:
-            pass
+            
+        formats = set()
+        for f in mode.formats:
+            formats.add(f)
+            
+        self.pixel_format.addItem("", "")
+        # prioritize mjpeg, then yuyv422
+        for p in sorted(formats, key=lambda x: 0 if 'mjpeg' in x.lower() else 1):
+            self.pixel_format.addItem(p, p)
+            
+        self._validate_selection()
 
-        # populate pixel_format choices from mode formats intersection
-        try:
-            if hasattr(self, "pixel_format") and getattr(mode, 'formats', None):
-                formats = set()
-                for f in mode.formats:
-                    m = re.search(r"(?:vcodec|pixel_format)=(\w+)", f)
-                    if m:
-                        formats.add(m.group(1))
-                    else:
-                        formats.add(f)
-                self.pixel_format.clear()
-                self.pixel_format.addItem("", "")
-                ffpix = set(self._ffmpeg_caps.pixel_formats) if self._ffmpeg_caps else set()
-                for p in sorted(formats):
-                    if not ffpix or p in ffpix or p.lower() in (x.lower() for x in ffpix):
-                        self.pixel_format.addItem(p, p)
-        except Exception:
-            pass
-
+    def _on_format_changed(self) -> None:
+        fmt = self.pixel_format.currentData()
+        self.video_codec.clear()
+        
+        if not fmt or not self._ffmpeg_caps:
+            return
+            
+        self.video_codec.addItem("", "")
+        
+        # Determine logical encoders based on pixel format / camera output
+        # E.g. if camera outputs mjpeg, allow 'copy' or 'mjpeg'
+        if 'mjpeg' in str(fmt).lower():
+            self.video_codec.addItem("copy", "copy")
+            self.video_codec.addItem("mjpeg", "mjpeg")
+        
+        # Always allow standard hardware/software transcoders if available
+        preferred = ["hevc_nvenc", "h264_nvenc", "h264_qsv", "h264_amf", "libx264"]
+        for p in preferred:
+            if p in self._ffmpeg_caps.video_encoders:
+                self.video_codec.addItem(p, p)
+        
         self._validate_selection()
 
     def _validate_selection(self) -> None:
@@ -474,39 +508,31 @@ class ConfigDialog(QDialog):
         """
         errors = []
         cam_name = self.video_device.currentData()
-        res = self.resolution.currentData() or self.resolution.currentText()
-        if cam_name and res and self._profile:
-            cam = next((c for c in self._profile.cameras if c.name == cam_name), None)
-            if cam:
-                parts = res.split("x")
-                if len(parts) == 2:
-                    try:
-                        w, h = int(parts[0]), int(parts[1])
-                        mode = next((m for m in cam.modes if getattr(m, 'width', None) == w and getattr(m, 'height', None) == h), None)
-                        if mode:
-                            raw_fps = getattr(mode, 'max_fps', None) or getattr(mode, 'fps', 0)
-                            try:
-                                max_f = int(max(1, round(float(raw_fps))))
-                            except Exception:
-                                max_f = 30
-                            if self.fps.value() > max_f:
-                                errors.append("Selected FPS exceeds camera capability")
-                    except Exception:
-                        pass
+        res = self.resolution.currentData()
+        fps = self.fps.currentData()
+        fmt = self.pixel_format.currentData()
+        vc = self.video_codec.currentData()
+
+        # If camera is selected, ensure it has a valid configuration chain picked
+        if cam_name:
+            if not res: errors.append("Select a resolution")
+            if not fps: errors.append("Select an FPS")
+            if not fmt: errors.append("Select a format")
+            if not vc: errors.append("Select a video codec")
+
         if self._ffmpeg_caps:
-            vc = self.video_codec.currentText() if hasattr(self, "video_codec") else ""
-            if vc and vc not in self._ffmpeg_caps.video_encoders:
-                errors.append("Selected video codec not supported by ffmpeg")
-            ac = self.audio_codec.currentText() if hasattr(self, "audio_codec") else ""
+            ac = self.audio_codec.currentData()
             if ac and ac not in self._ffmpeg_caps.audio_encoders:
                 errors.append("Selected audio codec not supported by ffmpeg")
-            cont = self.container.currentText() if hasattr(self, "container") else ""
+            cont = self.container.currentData() or self.container.currentText()
             if cont and cont not in self._ffmpeg_caps.muxers:
                 errors.append("Selected container not supported by ffmpeg")
+                
         try:
             for w in self.findChildren(QPushButton):
                 if w.text().lower() == "save":
                     w.setEnabled(len(errors) == 0)
+                    w.setToolTip("\n".join(errors))
                     break
         except Exception:
             pass
@@ -516,15 +542,15 @@ class ConfigDialog(QDialog):
             video_device=str(self.video_device.currentData() or "").strip(),
             audio_device=str(self.audio_device.currentData() or "").strip(),
             resolution=str(self.resolution.currentData() or self.resolution.currentText()).strip(),
-            fps=int(self.fps.value()),
-            pixel_format=str(getattr(self, "pixel_format", None).currentText() if hasattr(self, "pixel_format") else "yuv420p") or "yuv420p",
-            video_codec=str(self.video_codec.currentText() if hasattr(self, "video_codec") else self.video_codec.text()).strip() or self.settings.video_codec,
+            fps=int(float(self.fps.currentData() or 30)),
+            pixel_format=str(self.pixel_format.currentData() or "yuv420p"),
+            video_codec=str(self.video_codec.currentData() or self.settings.video_codec),
             lossless=bool(self.lossless.isChecked()),
             sample_rate=int(self.sample_rate.currentData() or self.settings.sample_rate),
             channels=int(self.channels.currentData() or self.settings.channels),
-            audio_codec=(str(self.audio_codec.currentText()).strip() if hasattr(self, "audio_codec") else self.audio_codec.text().strip()) or self.settings.audio_codec,
-            rtbufsize=(str(self.rtbuf.currentText()).strip() if hasattr(self, "rtbuf") else self.rtbuf.text().strip()) or self.settings.rtbufsize,
-            thread_queue_size=int(self.thread_q.value()),
+            audio_codec=str(self.audio_codec.currentData() or self.settings.audio_codec),
+            rtbufsize=str(self.rtbuf.currentData() or self.settings.rtbufsize),
+            thread_queue_size=int(self.thread_q.currentData() or self.settings.thread_queue_size),
             hw_accel=bool(self.hw_accel.isChecked()),
             container=(str(self.container.currentText()).strip() if hasattr(self, "container") else self.container.text().strip()) or self.settings.container,
             output_dir=self.output_dir.text().strip() or self.settings.output_dir,

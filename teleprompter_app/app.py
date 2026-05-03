@@ -16,7 +16,6 @@ from teleprompter_app.core.parser import InputType, ScriptParser
 from teleprompter_app.core.state_manager import StateManager
 from teleprompter_app.core.tokenizer import ScriptTokenizer
 from teleprompter_app.recording.audio_config import RecordingConfig
-from teleprompter_app.recording.audio_recorder import LosslessAudioRecorder
 from teleprompter_app.recording.file_manager import RecordingFileManager, RecordingFiles
 from teleprompter_app.recording.subtitle_generator import SubtitleGenerator
 from teleprompter_app.speech.recognizer import RecognitionResult
@@ -55,7 +54,7 @@ class TeleprompterController(QObject):
         self.state = StateManager()
         self.microphones = MicrophoneManager()
         self.recording_files = RecordingFileManager()
-        self.recorder: LosslessAudioRecorder | None = None
+        self.ffmpeg_recorder = None
         self.current_recording_files: RecordingFiles | None = None
         self.subtitle_generator: SubtitleGenerator | None = None
         self.recording_started_at: float | None = None
@@ -67,7 +66,6 @@ class TeleprompterController(QObject):
         self.recording_timer = QTimer(self)
         self.recording_timer.setInterval(250)
         self.previewer = None
-        self.audio_recorder = None
         self.ffmpeg_recorder = None
 
         self._connect_signals()
@@ -309,9 +307,7 @@ class TeleprompterController(QObject):
         self.window.set_recording_directory(directory)
 
     def start_recording(self) -> None:
-        if (self.audio_recorder and getattr(self.audio_recorder, "is_running", False)) or (
-            self.ffmpeg_recorder and getattr(self.ffmpeg_recorder, "is_running", False)
-        ):
+        if self.ffmpeg_recorder and getattr(self.ffmpeg_recorder, "is_running", False):
             self.window.set_recording_status("Already recording")
             return
 
@@ -385,36 +381,41 @@ class TeleprompterController(QObject):
 
         # Decide which recorder(s) to start
         try:
-            # Use FFmpegRecorder for video (and combined audio+video)
+            # Use FFmpegRecorder for ALL recording (audio, video, or both)
             from teleprompter_app.recorder import FFmpegRecorder, RecorderConfig as FFRecConfig
             from teleprompter_app.config_manager import ConfigManager as RecorderConfigManager
 
             rec_mgr = RecorderConfigManager()
             rsettings = rec_mgr.load()
 
-            # If both audio and video requested, prefer a single ffmpeg process capturing both
-            if video_enabled:
-                out_file = files.audio_dir / f"{files.session_name}.{rsettings.container}"
+            if video_enabled or audio_enabled:
+                # Construct FFmpeg configuration based on user options
+                ext = rsettings.container if video_enabled else "mka" # Matroska audio default for audio-only
+                if audio_enabled and not video_enabled:
+                    ext = "flac" if rsettings.audio_codec in ["flac", ""] else rsettings.container
+                
+                out_file = files.audio_dir / f"{files.session_name}.{ext}"
+                
                 ff_cfg = FFRecConfig(
                     ffmpeg_path="ffmpeg",
-                    video_device=rsettings.video_device or None,
-                    audio_device=rsettings.audio_device or None,
-                    width=int(rsettings.resolution.split("x")[0]) if "x" in rsettings.resolution else None,
-                    height=int(rsettings.resolution.split("x")[1]) if "x" in rsettings.resolution else None,
-                    fps=rsettings.fps,
-                    pixel_format=None,
-                    video_codec=rsettings.video_codec,
-                    audio_codec=rsettings.audio_codec,
-                    audio_sample_rate=rsettings.sample_rate,
-                    audio_channels=rsettings.channels,
-                    output_container=rsettings.container,
+                    video_device=rsettings.video_device if video_enabled else None,
+                    audio_device=rsettings.audio_device if audio_enabled else None,
+                    width=int(rsettings.resolution.split("x")[0]) if video_enabled and rsettings.resolution and "x" in rsettings.resolution else None,
+                    height=int(rsettings.resolution.split("x")[1]) if video_enabled and rsettings.resolution and "x" in rsettings.resolution else None,
+                    fps=rsettings.fps if video_enabled else None,
+                    pixel_format=rsettings.pixel_format if video_enabled else None,
+                    video_codec=rsettings.video_codec if video_enabled else "",
+                    audio_codec=rsettings.audio_codec if audio_enabled else "",
+                    audio_sample_rate=rsettings.sample_rate if audio_enabled else None,
+                    audio_channels=rsettings.channels if audio_enabled else None,
+                    output_container=ext,
                     rtbufsize=rsettings.rtbufsize,
                     thread_queue_size=rsettings.thread_queue_size,
                     extra_ffmpeg_args=(rsettings.extra_ffmpeg_args.split() if rsettings.extra_ffmpeg_args else None),
                 )
 
                 # special-case: capture the application main window (rendered teleprompter)
-                if mode_text == "record main view":
+                if mode_text == "record main view" and video_enabled:
                     try:
                         title = str(self.window.windowTitle()) or "desktop"
                         ff_cfg.video_device = f"screen:{title}"
@@ -424,18 +425,8 @@ class TeleprompterController(QObject):
                 self.ffmpeg_recorder = FFmpegRecorder(ff_cfg, out_file)
                 self.ffmpeg_recorder.start()
 
-                # If user also wants lossless separate audio, we skip starting LosslessAudioRecorder
-                self.audio_recorder = None
-
-            elif audio_enabled:
-                # audio-only path uses existing LosslessAudioRecorder (lossless PCM/FLAC)
-                recorder = LosslessAudioRecorder()
-                recorder.start(device_index=self.settings.microphone_index, config=audio_config, files=files)
-                self.audio_recorder = recorder
-                self.ffmpeg_recorder = None
             else:
                 # srt-only: no recorder
-                self.audio_recorder = None
                 self.ffmpeg_recorder = None
 
         except Exception as exc:
@@ -445,11 +436,8 @@ class TeleprompterController(QObject):
             return
 
         self.current_recording_files = files
-        # mark recording start time: prefer audio recorder's started time
-        if self.audio_recorder is not None and getattr(self.audio_recorder, "started_at", None):
-            self.recording_started_at = self.audio_recorder.started_at
-        else:
-            self.recording_started_at = time.monotonic()
+        # mark recording start time
+        self.recording_started_at = time.monotonic()
 
         self.recording_timer.start()
         self.window.set_recording(True, "Recording 00:00")
@@ -459,17 +447,8 @@ class TeleprompterController(QObject):
             self.start_recognition()
 
     def stop_recording(self) -> None:
-        # Stop any running audio or ffmpeg recorders
-        audio_result = None
+        # Stop any running ffmpeg recorders
         try:
-            if self.audio_recorder is not None:
-                try:
-                    audio_result = self.audio_recorder.stop()
-                except Exception:
-                    logger.exception("Error stopping audio recorder")
-                finally:
-                    self.audio_recorder = None
-
             if self.ffmpeg_recorder is not None:
                 try:
                     self.ffmpeg_recorder.stop()
@@ -489,10 +468,6 @@ class TeleprompterController(QObject):
 
         if self.current_recording_files is not None:
             status = f"Recording saved in {self.current_recording_files.project_root}"
-            if audio_result is not None and getattr(audio_result, "dropped_chunks", 0):
-                status += f" ({audio_result.dropped_chunks} audio buffers dropped)"
-            if audio_result is not None and getattr(audio_result, "wav_flac_match", True) is False:
-                status += " (WAV/FLAC verification failed)"
             self.window.set_status(status)
             self.current_recording_files = None
 

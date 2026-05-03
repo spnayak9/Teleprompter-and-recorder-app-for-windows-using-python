@@ -14,11 +14,11 @@ from PySide6.QtGui import QPixmap, QImage, QColor, QFont
 from PySide6.QtWidgets import (
     QLabel,
     QWidget,
-    QVBoxLayout,
     QHBoxLayout,
     QPushButton,
     QComboBox,
     QGroupBox,
+    QStackedLayout,
 )
 import numpy as np
 
@@ -27,15 +27,14 @@ class PreviewOverlay(QWidget):
     def __init__(self, teleprompter_widget: QWidget, parent=None) -> None:
         super().__init__(parent)
         self.teleprompter = teleprompter_widget
-        self.preview_label = QLabel(self)
+        self.preview_label = QLabel()
         self.preview_label.setScaledContents(True)
         self.preview_label.setSizePolicy(self.teleprompter.sizePolicy())
         self.preview_label.hide()
+        
         # let mouse events pass through to the teleprompter widget
         try:
             self.preview_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            # ensure preview is stacked under the teleprompter
-            self.preview_label.stackUnder(self.teleprompter)
         except Exception:
             pass
 
@@ -44,17 +43,16 @@ class PreviewOverlay(QWidget):
         self.fps_label.setFont(QFont("monospace", 10))
         self.fps_label.hide()
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        # Teleprompter is managed by the layout; preview_label is positioned
-        # absolutely as a background child and must not be part of the layout
-        layout.addWidget(self.teleprompter)
-        # ensure preview is below the teleprompter
-        try:
-            self.preview_label.lower()
-            self.teleprompter.raise_()
-        except Exception:
-            pass
+        # Use StackedLayout to layer the teleprompter over the background
+        self._stacked_layout = QStackedLayout(self)
+        self._stacked_layout.setStackingMode(QStackedLayout.StackAll)
+        self._stacked_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Index 0: background (preview), Index 1: foreground (teleprompter)
+        self._stacked_layout.addWidget(self.preview_label)
+        self._stacked_layout.addWidget(self.teleprompter)
+        self._stacked_layout.setCurrentIndex(1) # Bring teleprompter to front
+
         self._preview_enabled = False
         self._background_color = "#000000"
 
@@ -89,12 +87,6 @@ class PreviewOverlay(QWidget):
         self.preview_label.setPixmap(pix)
         if not self.preview_label.isVisible():
             self.preview_label.show()
-            try:
-                # ensure preview_label stays behind teleprompter content
-                self.preview_label.lower()
-                self.teleprompter.raise_()
-            except Exception:
-                pass
             self.fps_label.show()
 
     def set_fps(self, fps: float) -> None:
@@ -105,9 +97,6 @@ class PreviewOverlay(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
-        # Preview label fills the widget as absolute background
-        self.preview_label.setGeometry(0, 0, self.width(), self.height())
-        # teleprompter is laid out by the layout; no absolute resize required
         self.fps_label.move(self.width() - self.fps_label.width() - 12, 8)
 
 
