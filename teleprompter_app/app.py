@@ -395,7 +395,11 @@ class TeleprompterController(QObject):
                         raise RuntimeError("Hardware encoding selected but no hardware encoder is configured.")
                     
                     enc_prof = self.system_profile.encoder_by_name(hw_enc)
-                    if enc_prof and enc_prof.verification_status != "usable":
+                    from teleprompter_app.system_profile import EncoderState
+                    if not enc_prof or enc_prof.state == EncoderState.UNSUPPORTED:
+                        raise RuntimeError(f"Hardware encoding requested but encoder '{hw_enc}' is not supported.")
+
+                    if enc_prof.state != EncoderState.AVAILABLE:
                         from teleprompter_app.recording.encoder_probe import verify_encoder_usable
                         from PySide6.QtWidgets import QApplication
                         from PySide6.QtCore import Qt
@@ -403,9 +407,11 @@ class TeleprompterController(QObject):
                         try:
                             usable, reason = verify_encoder_usable("ffmpeg", hw_enc)
                             if not usable:
-                                self.system_profile = self.system_profile.with_encoder_verification(hw_enc, "failed", reason)
+                                self.system_profile = self.system_profile.with_encoder_verification(hw_enc, EncoderState.UNAVAILABLE, reason)
+                                self.system_profile.save_encoder_cache()
                                 raise RuntimeError(f"Hardware encoder {hw_enc} failed to verify:\n{reason}")
-                            self.system_profile = self.system_profile.with_encoder_verification(hw_enc, "usable", "")
+                            self.system_profile = self.system_profile.with_encoder_verification(hw_enc, EncoderState.AVAILABLE, "")
+                            self.system_profile.save_encoder_cache()
                         finally:
                             QApplication.restoreOverrideCursor()
 
@@ -702,29 +708,30 @@ class TeleprompterController(QObject):
         return "medium"
 
     def _best_hardware_encoder(self) -> str | None:
-        """Return the name of the best verified (or at least detected) hardware encoder."""
-        # First prefer verified usable ones
+        """Return the name of the best verified (AVAILABLE) hardware encoder."""
+        from teleprompter_app.system_profile import EncoderState
         best = self.system_profile.best_hardware_encoder()
-        if best and best.verification_status == "usable":
+        if best and best.state == EncoderState.AVAILABLE:
             return best.name
-        # Fall back to detected (unverified) — caller may trigger lazy verify
-        if best:
-            logger.info(
-                "Best hardware encoder %r is unverified — will attempt lazy verification.",
-                best.name
-            )
+
+        # If no AVAILABLE hardware encoder, see if there are any UNSUPPORTED ones we can verify
+        unsupported = [e for e in self.system_profile.video_encoders if e.kind == "hardware" and e.state == EncoderState.UNSUPPORTED]
+        if unsupported:
+            logger.info("No verified hardware encoder found; attempting lazy verification on unverified encoders.")
             from teleprompter_app.recording.encoder_probe import verify_encoder_usable
             from PySide6.QtWidgets import QApplication
             from PySide6.QtCore import Qt
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
-                usable, reason = verify_encoder_usable("ffmpeg", best.name)
-                if usable:
-                    self.system_profile = self.system_profile.with_encoder_verification(best.name, "usable", "")
-                    return best.name
-                else:
-                    self.system_profile = self.system_profile.with_encoder_verification(best.name, "failed", reason)
-                    return None
+                for enc in unsupported:
+                    usable, reason = verify_encoder_usable("ffmpeg", enc.name)
+                    if usable:
+                        self.system_profile = self.system_profile.with_encoder_verification(enc.name, EncoderState.AVAILABLE, "")
+                        self.system_profile.save_encoder_cache()
+                        return enc.name
+                    else:
+                        self.system_profile = self.system_profile.with_encoder_verification(enc.name, EncoderState.UNAVAILABLE, reason)
+                        self.system_profile.save_encoder_cache()
             finally:
                 QApplication.restoreOverrideCursor()
         return None

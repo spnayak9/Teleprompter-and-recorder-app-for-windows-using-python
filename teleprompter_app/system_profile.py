@@ -31,15 +31,17 @@ class AudioProfile:
     ffmpeg_name: str
 
 
+from enum import StrEnum
+
+class EncoderState(StrEnum):
+    AVAILABLE = "available"       # detected + verified usable
+    UNAVAILABLE = "unavailable"   # detected but failed verification
+    UNSUPPORTED = "unsupported"   # not verified and should NOT be selectable
+
 @dataclass(frozen=True, slots=True)
 class VideoEncoderProfile:
     """
     Represents a single video encoder detected in the FFmpeg build.
-
-    verification_status values:
-      - "unknown"  : detected via `ffmpeg -encoders` but not yet tested (hardware encoders at startup)
-      - "usable"   : passed the 1-second test encode (hardware) OR is a known-good software encoder
-      - "failed"   : failed the 1-second test encode with a reason
     """
     name: str
     label: str
@@ -48,7 +50,7 @@ class VideoEncoderProfile:
     codec_family: str       # "h264" | "hevc" | "av1" | "ffv1" | "mjpeg"
     lossless_capable: bool
     realtime_4k_recommended: bool
-    verification_status: str = "unknown"   # unknown | usable | failed
+    state: EncoderState = EncoderState.UNSUPPORTED
     failure_reason: str = ""
 
     @property
@@ -56,9 +58,9 @@ class VideoEncoderProfile:
         """Human-readable label including verification status for UI display."""
         if self.kind == "software":
             return self.label
-        if self.verification_status == "usable":
+        if self.state == EncoderState.AVAILABLE:
             return self.label
-        if self.verification_status == "failed":
+        if self.state == EncoderState.UNAVAILABLE:
             return f"{self.label} — not available"
         return f"{self.label} — detected, not verified"
 
@@ -67,7 +69,7 @@ class VideoEncoderProfile:
         """Software encoders always usable. Hardware only if explicitly verified."""
         if self.kind == "software":
             return True
-        return self.verification_status == "usable"
+        return self.state == EncoderState.AVAILABLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,10 +148,10 @@ class SystemProfile:
         return detected[0] if detected else None
 
     def with_encoder_verification(
-        self, name: str, status: str, failure_reason: str = ""
+        self, name: str, state: EncoderState, failure_reason: str = ""
     ) -> "SystemProfile":
         """
-        Return a new SystemProfile with the given encoder's verification_status updated.
+        Return a new SystemProfile with the given encoder's state updated.
         Used for lazy verification: call this after `verify_encoder_usable()`.
         """
         updated = tuple(
@@ -161,7 +163,7 @@ class SystemProfile:
                 codec_family=e.codec_family,
                 lossless_capable=e.lossless_capable,
                 realtime_4k_recommended=e.realtime_4k_recommended,
-                verification_status=status if e.name == name else e.verification_status,
+                state=state if e.name == name else e.state,
                 failure_reason=failure_reason if e.name == name else e.failure_reason,
             )
             for e in self.video_encoders
@@ -175,6 +177,30 @@ class SystemProfile:
             hardware_accels=self.hardware_accels,
             video_encoders=updated,
         )
+
+    def save_encoder_cache(self) -> None:
+        """Persists explicit encoder states (AVAILABLE, UNAVAILABLE) to disk. Ignores UNSUPPORTED."""
+        import json
+        from pathlib import Path
+        cache_path = Path.home() / ".ai_teleprompter" / "encoder_cache.json"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        cache_data = {}
+        if cache_path.exists():
+            try:
+                cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        for e in self.video_encoders:
+            # Assertion guard: never save UNSUPPORTED
+            if e.state != EncoderState.UNSUPPORTED:
+                cache_data[e.name] = {
+                    "state": e.state.value,
+                    "failure_reason": e.failure_reason,
+                }
+                
+        cache_path.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -213,7 +239,7 @@ class SystemProfile:
                     "codec_family": e.codec_family,
                     "lossless_capable": e.lossless_capable,
                     "realtime_4k_recommended": e.realtime_4k_recommended,
-                    "verification_status": e.verification_status,
+                    "state": e.state.value,
                 }
                 for e in self.video_encoders
             ],

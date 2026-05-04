@@ -312,6 +312,26 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
 
     # Structured encoder detection via ffmpeg -encoders (correct method)
     encoder_dicts = probe_detected_encoders(ffmpeg_path)
+    
+    import json
+    from teleprompter_app.system_profile import EncoderState
+    cache_path = Path.home() / ".ai_teleprompter" / "encoder_cache.json"
+    cache_data = {}
+    if cache_path.exists():
+        try:
+            cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    for d in encoder_dicts:
+        name = d["name"]
+        # Only apply cache if the encoder was correctly discovered via ffmpeg -encoders
+        if name in cache_data and d["state"] == EncoderState.UNSUPPORTED.value:
+            cstate = cache_data[name].get("state")
+            if cstate in (EncoderState.AVAILABLE.value, EncoderState.UNAVAILABLE.value):
+                d["state"] = cstate
+                d["failure_reason"] = cache_data[name].get("failure_reason", "")
+
     video_encoders = tuple(
         VideoEncoderProfile(
             name=d["name"],
@@ -321,7 +341,7 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
             codec_family=d["codec_family"],
             lossless_capable=d["lossless_capable"],
             realtime_4k_recommended=d["realtime_4k_recommended"],
-            verification_status=d["verification_status"],
+            state=EncoderState(d["state"]),
             failure_reason=d["failure_reason"],
         )
         for d in encoder_dicts
@@ -362,7 +382,7 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
     )
     if hw_enc:
         log.info("Hardware encoders (detected, lazy verify): %s",
-                 [(e.name, e.verification_status) for e in hw_enc])
+                 [(e.name, e.state.value) for e in hw_enc])
     if sw_enc:
         log.info("Software encoders: %s", [e.name for e in sw_enc])
     if profile.hardware_accels:

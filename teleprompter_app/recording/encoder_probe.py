@@ -23,79 +23,6 @@ _ENCODER_LINE_RE = re.compile(r"^\s*[A-Z.]{6}\s+(?P<name>[a-zA-Z0-9_]+)\s+")
 
 
 # ---------------------------------------------------------------------------
-# Known encoder catalog
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True, slots=True)
-class EncoderCatalogEntry:
-    label: str
-    kind: str          # "hardware" | "software"
-    vendor: str        # "nvidia" | "amd" | "intel" | "software"
-    codec_family: str  # "h264" | "hevc" | "av1" | "ffv1" | "mjpeg"
-    lossless_capable: bool
-    realtime_4k_recommended: bool
-
-
-HARDWARE_ENCODER_CATALOG: dict[str, EncoderCatalogEntry] = {
-    "h264_nvenc": EncoderCatalogEntry(
-        label="NVIDIA H.264 NVENC", kind="hardware", vendor="nvidia",
-        codec_family="h264", lossless_capable=True, realtime_4k_recommended=True,
-    ),
-    "hevc_nvenc": EncoderCatalogEntry(
-        label="NVIDIA HEVC NVENC", kind="hardware", vendor="nvidia",
-        codec_family="hevc", lossless_capable=False, realtime_4k_recommended=True,
-    ),
-    "av1_nvenc": EncoderCatalogEntry(
-        label="NVIDIA AV1 NVENC", kind="hardware", vendor="nvidia",
-        codec_family="av1", lossless_capable=False, realtime_4k_recommended=True,
-    ),
-    "h264_qsv": EncoderCatalogEntry(
-        label="Intel H.264 Quick Sync", kind="hardware", vendor="intel",
-        codec_family="h264", lossless_capable=False, realtime_4k_recommended=True,
-    ),
-    "hevc_qsv": EncoderCatalogEntry(
-        label="Intel HEVC Quick Sync", kind="hardware", vendor="intel",
-        codec_family="hevc", lossless_capable=False, realtime_4k_recommended=True,
-    ),
-    "av1_qsv": EncoderCatalogEntry(
-        label="Intel AV1 Quick Sync", kind="hardware", vendor="intel",
-        codec_family="av1", lossless_capable=False, realtime_4k_recommended=True,
-    ),
-    "h264_amf": EncoderCatalogEntry(
-        label="AMD H.264 AMF", kind="hardware", vendor="amd",
-        codec_family="h264", lossless_capable=False, realtime_4k_recommended=True,
-    ),
-    "hevc_amf": EncoderCatalogEntry(
-        label="AMD HEVC AMF", kind="hardware", vendor="amd",
-        codec_family="hevc", lossless_capable=False, realtime_4k_recommended=True,
-    ),
-    "av1_amf": EncoderCatalogEntry(
-        label="AMD AV1 AMF", kind="hardware", vendor="amd",
-        codec_family="av1", lossless_capable=False, realtime_4k_recommended=True,
-    ),
-}
-
-SOFTWARE_ENCODER_CATALOG: dict[str, EncoderCatalogEntry] = {
-    "libx264": EncoderCatalogEntry(
-        label="H.264 Software (x264)", kind="software", vendor="software",
-        codec_family="h264", lossless_capable=True, realtime_4k_recommended=False,
-    ),
-    "libx265": EncoderCatalogEntry(
-        label="HEVC Software (x265)", kind="software", vendor="software",
-        codec_family="hevc", lossless_capable=True, realtime_4k_recommended=False,
-    ),
-    "ffv1": EncoderCatalogEntry(
-        label="FFV1 Lossless", kind="software", vendor="software",
-        codec_family="ffv1", lossless_capable=True, realtime_4k_recommended=False,
-    ),
-    "mjpeg": EncoderCatalogEntry(
-        label="MJPEG Software", kind="software", vendor="software",
-        codec_family="mjpeg", lossless_capable=False, realtime_4k_recommended=False,
-    ),
-}
-
-
-# ---------------------------------------------------------------------------
 # FFmpeg helpers
 # ---------------------------------------------------------------------------
 
@@ -195,44 +122,74 @@ def verify_encoder_usable(ffmpeg_path: str, encoder_name: str, timeout: int = 15
 def probe_detected_encoders(ffmpeg_path: str = "ffmpeg") -> list[dict]:
     """
     Detect hardware and software encoders available in this FFmpeg build.
-    Hardware encoders are returned with verification_status='unknown' (lazy verify).
-    Software encoders are returned with verification_status='usable'.
+    Hardware encoders are returned with state='unsupported' (lazy verify).
+    Software encoders are returned with state='available'.
 
     Returns a list of dicts suitable for constructing VideoEncoderProfile objects.
     """
     available = list_available_encoder_names(ffmpeg_path)
     results: list[dict] = []
 
-    # Priority order for hardware encoders: NVENC > QSV > AMF
-    for name, entry in HARDWARE_ENCODER_CATALOG.items():
-        if name in available:
-            results.append({
-                "name": name,
-                "label": entry.label,
-                "kind": entry.kind,
-                "vendor": entry.vendor,
-                "codec_family": entry.codec_family,
-                "lossless_capable": entry.lossless_capable,
-                "realtime_4k_recommended": entry.realtime_4k_recommended,
-                "verification_status": "unknown",  # lazy — not verified at startup
-                "failure_reason": "",
-            })
-            logger.info("Hardware encoder detected (unverified): %s (%s)", name, entry.label)
+    from teleprompter_app.system_profile import EncoderState
 
-    for name, entry in SOFTWARE_ENCODER_CATALOG.items():
-        if name in available:
+    for name in available:
+        if name.endswith("_nvenc"):
             results.append({
-                "name": name,
-                "label": entry.label,
-                "kind": entry.kind,
-                "vendor": entry.vendor,
-                "codec_family": entry.codec_family,
-                "lossless_capable": entry.lossless_capable,
-                "realtime_4k_recommended": entry.realtime_4k_recommended,
-                "verification_status": "usable",  # software encoders always usable
-                "failure_reason": "",
+                "name": name, "label": f"NVIDIA {name.upper().replace('_NVENC', '')} NVENC",
+                "kind": "hardware", "vendor": "nvidia", "codec_family": name.split("_")[0],
+                "lossless_capable": "h264" in name, "realtime_4k_recommended": True,
+                "state": EncoderState.UNSUPPORTED.value, "failure_reason": "",
             })
-            logger.info("Software encoder detected: %s (%s)", name, entry.label)
+            logger.info("Hardware encoder detected (unverified): %s", name)
+        elif name.endswith("_qsv"):
+            results.append({
+                "name": name, "label": f"Intel {name.upper().replace('_QSV', '')} Quick Sync",
+                "kind": "hardware", "vendor": "intel", "codec_family": name.split("_")[0],
+                "lossless_capable": False, "realtime_4k_recommended": True,
+                "state": EncoderState.UNSUPPORTED.value, "failure_reason": "",
+            })
+            logger.info("Hardware encoder detected (unverified): %s", name)
+        elif name.endswith("_amf"):
+            results.append({
+                "name": name, "label": f"AMD {name.upper().replace('_AMF', '')} AMF",
+                "kind": "hardware", "vendor": "amd", "codec_family": name.split("_")[0],
+                "lossless_capable": False, "realtime_4k_recommended": True,
+                "state": EncoderState.UNSUPPORTED.value, "failure_reason": "",
+            })
+            logger.info("Hardware encoder detected (unverified): %s", name)
+        # Software encoders
+        elif name == "libx264":
+            results.append({
+                "name": name, "label": "H.264 Software (x264)",
+                "kind": "software", "vendor": "software", "codec_family": "h264",
+                "lossless_capable": True, "realtime_4k_recommended": False,
+                "state": EncoderState.AVAILABLE.value, "failure_reason": "",
+            })
+            logger.info("Software encoder detected: %s", name)
+        elif name == "libx265":
+            results.append({
+                "name": name, "label": "HEVC Software (x265)",
+                "kind": "software", "vendor": "software", "codec_family": "hevc",
+                "lossless_capable": True, "realtime_4k_recommended": False,
+                "state": EncoderState.AVAILABLE.value, "failure_reason": "",
+            })
+            logger.info("Software encoder detected: %s", name)
+        elif name == "ffv1":
+            results.append({
+                "name": name, "label": "FFV1 Lossless",
+                "kind": "software", "vendor": "software", "codec_family": "ffv1",
+                "lossless_capable": True, "realtime_4k_recommended": False,
+                "state": EncoderState.AVAILABLE.value, "failure_reason": "",
+            })
+            logger.info("Software encoder detected: %s", name)
+        elif name == "mjpeg":
+            results.append({
+                "name": name, "label": "MJPEG Software",
+                "kind": "software", "vendor": "software", "codec_family": "mjpeg",
+                "lossless_capable": False, "realtime_4k_recommended": False,
+                "state": EncoderState.AVAILABLE.value, "failure_reason": "",
+            })
+            logger.info("Software encoder detected: %s", name)
 
     hw_count = sum(1 for r in results if r["kind"] == "hardware")
     sw_count = sum(1 for r in results if r["kind"] == "software")
