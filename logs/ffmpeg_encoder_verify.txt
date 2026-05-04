@@ -1,0 +1,30 @@
+h264_nvenc: FAIL minating thread with return code -22 (Invalid argument)
+[out#0/null @ 0000022ac2a7d080] Nothing was written into output file, because at least one of its streams received no packets.
+frame=    0 fps=0.0 q=0.0 Lsize=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.00    
+Conversion failed!
+hevc_nvenc: FAIL minating thread with return code -22 (Invalid argument)
+[out#0/null @ 00000111bb4dd080] Nothing was written into output file, because at least one of its streams received no packets.
+frame=    0 fps=0.0 q=0.0 Lsize=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.00    
+Conversion failed!
+h264_qsv: FAIL minating thread with return code -22 (Invalid argument)
+[out#0/null @ 000001ea506bd080] Nothing was written into output file, because at least one of its streams received no packets.
+frame=    0 fps=0.0 q=0.0 Lsize=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.03    
+Conversion failed!
+hevc_qsv: FAIL d with return code -1313558101 (Unknown error occurred)
+[out#0/null @ 000002035939d080] Nothing was written into output file, because at least one of its streams received no packets.
+frame=    0 fps=0.0 q=0.0 Lsize=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.03    
+Conversion failed!
+h264_amf: PASS 
+hevc_amf: PASS 
+av1_amf: FAIL thread with return code -1129203192 (Encoder not found)
+[out#0/null @ 0000023713b7d8c0] Nothing was written into output file, because at least one of its streams received no packets.
+frame=    0 fps=0.0 q=0.0 Lsize=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.10    
+Conversion failed!
+av1_qsv: FAIL minating thread with return code -22 (Invalid argument)
+[out#0/null @ 00000207a241d8c0] Nothing was written into output file, because at least one of its streams received no packets.
+frame=    0 fps=0.0 q=0.0 Lsize=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.02    
+Conversion failed!
+av1_nvenc: FAIL minating thread with return code -22 (Invalid argument)
+[out#0/null @ 000001e72618d080] Nothing was written into output file, because at least one of its streams received no packets.
+frame=    0 fps=0.0 q=0.0 Lsize=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.00    
+Conversion failed!

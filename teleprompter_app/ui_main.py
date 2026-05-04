@@ -150,8 +150,10 @@ class MainToolbarControls(QWidget):
         self.mode.addItem("Audio + Video + SRT", "audio + video + srt")
             
         self.background_selector = QComboBox()
+        self.background_selector.addItem("No Preview", "none")
         self.background_selector.addItem("Color", "color")
         self.background_selector.addItem("Camera Preview", "camera")
+        self.background_selector.setCurrentIndex(1)  # Default: Color
         
         self.preview_res_selector = QComboBox()
         self.preview_res_selector.addItem("240p", "240p")
@@ -161,6 +163,7 @@ class MainToolbarControls(QWidget):
         self.preview_res_selector.setCurrentText("360p")
 
         self.preview_camera_selector = QComboBox()
+        self.preview_camera_selector.addItem("None (No Preview)", "__none__")
         self.preview_camera_selector.addItem("Same as Recording", "__same_as_recording__")
 
         self.start_btn = QPushButton("Start Recording")

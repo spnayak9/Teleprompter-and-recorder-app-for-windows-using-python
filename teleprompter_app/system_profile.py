@@ -32,15 +32,73 @@ class AudioProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class VideoEncoderProfile:
+    """
+    Represents a single video encoder detected in the FFmpeg build.
+
+    verification_status values:
+      - "unknown"  : detected via `ffmpeg -encoders` but not yet tested (hardware encoders at startup)
+      - "usable"   : passed the 1-second test encode (hardware) OR is a known-good software encoder
+      - "failed"   : failed the 1-second test encode with a reason
+    """
+    name: str
+    label: str
+    kind: str               # "hardware" | "software"
+    vendor: str             # "nvidia" | "amd" | "intel" | "software"
+    codec_family: str       # "h264" | "hevc" | "av1" | "ffv1" | "mjpeg"
+    lossless_capable: bool
+    realtime_4k_recommended: bool
+    verification_status: str = "unknown"   # unknown | usable | failed
+    failure_reason: str = ""
+
+    @property
+    def display_label(self) -> str:
+        """Human-readable label including verification status for UI display."""
+        if self.kind == "software":
+            return self.label
+        if self.verification_status == "usable":
+            return self.label
+        if self.verification_status == "failed":
+            return f"{self.label} — not available"
+        return f"{self.label} — detected, not verified"
+
+    @property
+    def is_usable(self) -> bool:
+        """Software encoders always usable. Hardware only if explicitly verified."""
+        if self.kind == "software":
+            return True
+        return self.verification_status == "usable"
+
+
+@dataclass(frozen=True, slots=True)
 class SystemProfile:
     cameras: tuple[CameraProfile, ...] = field(default_factory=tuple)
     audio_inputs: tuple[AudioProfile, ...] = field(default_factory=tuple)
     video_codecs: tuple[str, ...] = field(default_factory=tuple)
     audio_codecs: tuple[str, ...] = field(default_factory=tuple)
     containers: tuple[str, ...] = field(default_factory=tuple)
-    hardware_video_encoders: tuple[str, ...] = field(default_factory=tuple)
-    software_video_encoders: tuple[str, ...] = field(default_factory=tuple)
     hardware_accels: tuple[str, ...] = field(default_factory=tuple)
+
+    # Structured encoder profiles (replaces old string tuples)
+    video_encoders: tuple[VideoEncoderProfile, ...] = field(default_factory=tuple)
+
+    # ---------------------------------------------------------------------------
+    # Backward-compat properties (deprecated — use video_encoders directly)
+    # ---------------------------------------------------------------------------
+
+    @property
+    def hardware_video_encoders(self) -> tuple[str, ...]:
+        """Names of detected hardware encoders (may include unverified ones)."""
+        return tuple(e.name for e in self.video_encoders if e.kind == "hardware")
+
+    @property
+    def software_video_encoders(self) -> tuple[str, ...]:
+        """Names of detected software encoders."""
+        return tuple(e.name for e in self.video_encoders if e.kind == "software")
+
+    # ---------------------------------------------------------------------------
+    # Lookup helpers
+    # ---------------------------------------------------------------------------
 
     def camera_by_ffmpeg_name(self, ffmpeg_name: str) -> CameraProfile | None:
         for cam in self.cameras:
@@ -53,6 +111,70 @@ class SystemProfile:
             if cam.opencv_index == index:
                 return cam
         return None
+
+    def hardware_encoders(self) -> tuple[VideoEncoderProfile, ...]:
+        """Detected hardware encoders (all, including unverified)."""
+        return tuple(e for e in self.video_encoders if e.kind == "hardware")
+
+    def usable_hardware_encoders(self) -> tuple[VideoEncoderProfile, ...]:
+        """Hardware encoders that have been verified usable."""
+        return tuple(e for e in self.video_encoders if e.kind == "hardware" and e.is_usable)
+
+    def software_encoders(self) -> tuple[VideoEncoderProfile, ...]:
+        """Software encoders (always usable)."""
+        return tuple(e for e in self.video_encoders if e.kind == "software")
+
+    def encoder_by_name(self, name: str) -> VideoEncoderProfile | None:
+        for e in self.video_encoders:
+            if e.name == name:
+                return e
+        return None
+
+    def best_hardware_encoder(self) -> VideoEncoderProfile | None:
+        """
+        Returns the highest-priority verified hardware encoder.
+        Priority: NVENC > QSV > AMF
+        """
+        priority = ["nvenc", "qsv", "amf"]
+        usable = self.usable_hardware_encoders()
+        for vendor_key in priority:
+            for enc in usable:
+                if vendor_key in enc.name:
+                    return enc
+        # No verified one — return first detected as fallback (caller must verify)
+        detected = self.hardware_encoders()
+        return detected[0] if detected else None
+
+    def with_encoder_verification(
+        self, name: str, status: str, failure_reason: str = ""
+    ) -> "SystemProfile":
+        """
+        Return a new SystemProfile with the given encoder's verification_status updated.
+        Used for lazy verification: call this after `verify_encoder_usable()`.
+        """
+        updated = tuple(
+            VideoEncoderProfile(
+                name=e.name,
+                label=e.label,
+                kind=e.kind,
+                vendor=e.vendor,
+                codec_family=e.codec_family,
+                lossless_capable=e.lossless_capable,
+                realtime_4k_recommended=e.realtime_4k_recommended,
+                verification_status=status if e.name == name else e.verification_status,
+                failure_reason=failure_reason if e.name == name else e.failure_reason,
+            )
+            for e in self.video_encoders
+        )
+        return SystemProfile(
+            cameras=self.cameras,
+            audio_inputs=self.audio_inputs,
+            video_codecs=self.video_codecs,
+            audio_codecs=self.audio_codecs,
+            containers=self.containers,
+            hardware_accels=self.hardware_accels,
+            video_encoders=updated,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,7 +203,18 @@ class SystemProfile:
             "video_codecs": list(self.video_codecs),
             "audio_codecs": list(self.audio_codecs),
             "containers": list(self.containers),
-            "hardware_video_encoders": list(self.hardware_video_encoders),
-            "software_video_encoders": list(self.software_video_encoders),
             "hardware_accels": list(self.hardware_accels),
+            "video_encoders": [
+                {
+                    "name": e.name,
+                    "label": e.label,
+                    "kind": e.kind,
+                    "vendor": e.vendor,
+                    "codec_family": e.codec_family,
+                    "lossless_capable": e.lossless_capable,
+                    "realtime_4k_recommended": e.realtime_4k_recommended,
+                    "verification_status": e.verification_status,
+                }
+                for e in self.video_encoders
+            ],
         }

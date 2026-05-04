@@ -6,11 +6,13 @@ import subprocess
 
 from pathlib import Path
 from teleprompter_app.camera_mapper import detect_opencv_cameras
+from teleprompter_app.recording.encoder_probe import probe_detected_encoders
 from teleprompter_app.system_profile import (
     AudioProfile,
     CameraMode,
     CameraProfile,
     SystemProfile,
+    VideoEncoderProfile,
 )
 
 log = logging.getLogger(__name__)
@@ -24,24 +26,6 @@ PIXEL_RE = re.compile(r"pixel_format=(?P<fmt>[a-zA-Z0-9_]+)", re.IGNORECASE)
 VCODEC_RE = re.compile(r"vcodec=(?P<fmt>[a-zA-Z0-9_]+)", re.IGNORECASE)
 INTERVAL_RE = re.compile(r"(?:min|max)\s*interval=(?P<interval>\d+)", re.IGNORECASE)
 
-HARDWARE_ENCODERS = {
-    "h264_nvenc": "NVIDIA H.264 NVENC",
-    "hevc_nvenc": "NVIDIA HEVC NVENC",
-    "av1_nvenc": "NVIDIA AV1 NVENC",
-    "h264_qsv": "Intel H.264 Quick Sync",
-    "hevc_qsv": "Intel HEVC Quick Sync",
-    "av1_qsv": "Intel AV1 Quick Sync",
-    "h264_amf": "AMD H.264 AMF",
-    "hevc_amf": "AMD HEVC AMF",
-    "av1_amf": "AMD AV1 AMF",
-}
-
-SOFTWARE_ENCODERS = {
-    "libx264": "H.264 Software",
-    "libx265": "HEVC Software",
-    "ffv1": "FFV1 Lossless",
-    "mjpeg": "MJPEG Software",
-}
 
 
 def interval_100ns_to_fps(interval: int) -> float:
@@ -233,46 +217,32 @@ def _verify_camera_mode(
         return False
 
 
-def _ffmpeg_codecs(ffmpeg_path: str) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+def _ffmpeg_codecs(ffmpeg_path: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return (video_codecs, audio_codecs) general lists only."""
     output = _run_ffmpeg([ffmpeg_path, "-hide_banner", "-codecs"], timeout=20)
 
     video: list[str] = []
     audio: list[str] = []
-    hardware_video: list[str] = []
-    software_video: list[str] = []
 
     for line in output.splitlines():
         if len(line) < 8:
             continue
-
         flags = line[:7]
         parts = line[7:].strip().split()
         if not parts:
             continue
-
         codec = parts[0]
         can_encode = "E" in flags
         is_video = "V" in flags
         is_audio = "A" in flags
-
         if not can_encode:
             continue
-
         if is_video:
             video.append(codec)
-            if codec in HARDWARE_ENCODERS:
-                hardware_video.append(codec)
-            elif codec in SOFTWARE_ENCODERS:
-                software_video.append(codec)
         elif is_audio:
             audio.append(codec)
 
-    return (
-        tuple(sorted(set(video))),
-        tuple(sorted(set(audio))),
-        tuple(sorted(set(hardware_video))),
-        tuple(sorted(set(software_video))),
-    )
+    return (tuple(sorted(set(video))), tuple(sorted(set(audio))))
 
 
 def _ffmpeg_hwaccels(ffmpeg_path: str) -> tuple[str, ...]:
@@ -306,6 +276,7 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
     """
     Production rule:
     Run this exactly once at application startup.
+    Hardware encoders are detected but NOT verified (lazy verification).
     """
     log.info("Probing system capabilities once...")
 
@@ -334,9 +305,27 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
             )
         )
 
-    video_codecs, audio_codecs, hw_video, sw_video = _ffmpeg_codecs(ffmpeg_path)
+    # General codec lists (for info only — not for encoder selection)
+    video_codecs, audio_codecs = _ffmpeg_codecs(ffmpeg_path)
     containers = _ffmpeg_muxers(ffmpeg_path)
     hw_accels = _ffmpeg_hwaccels(ffmpeg_path)
+
+    # Structured encoder detection via ffmpeg -encoders (correct method)
+    encoder_dicts = probe_detected_encoders(ffmpeg_path)
+    video_encoders = tuple(
+        VideoEncoderProfile(
+            name=d["name"],
+            label=d["label"],
+            kind=d["kind"],
+            vendor=d["vendor"],
+            codec_family=d["codec_family"],
+            lossless_capable=d["lossless_capable"],
+            realtime_4k_recommended=d["realtime_4k_recommended"],
+            verification_status=d["verification_status"],
+            failure_reason=d["failure_reason"],
+        )
+        for d in encoder_dicts
+    )
 
     profile = SystemProfile(
         cameras=tuple(cameras),
@@ -347,9 +336,8 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
         video_codecs=video_codecs,
         audio_codecs=audio_codecs,
         containers=containers,
-        hardware_video_encoders=hw_video,
-        software_video_encoders=sw_video,
         hardware_accels=hw_accels,
+        video_encoders=video_encoders,
     )
 
     for cam in profile.cameras:
@@ -363,18 +351,21 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
                 mode.format_kind,
             )
 
+    hw_enc = profile.hardware_encoders()
+    sw_enc = profile.software_encoders()
     log.info(
-        "System profile ready: %s cameras, %s audio inputs, %s hw encoders, %s sw encoders",
+        "System profile ready: %d cameras, %d audio inputs, %d hw encoders (unverified), %d sw encoders",
         len(profile.cameras),
         len(profile.audio_inputs),
-        len(profile.hardware_video_encoders),
-        len(profile.software_video_encoders),
+        len(hw_enc),
+        len(sw_enc),
     )
-    if profile.hardware_video_encoders:
-        log.info("Hardware encoders: %s", ", ".join(profile.hardware_video_encoders))
-    if profile.software_video_encoders:
-        log.info("Software encoders: %s", ", ".join(profile.software_video_encoders))
+    if hw_enc:
+        log.info("Hardware encoders (detected, lazy verify): %s",
+                 [(e.name, e.verification_status) for e in hw_enc])
+    if sw_enc:
+        log.info("Software encoders: %s", [e.name for e in sw_enc])
     if profile.hardware_accels:
-        log.info("Hardware accelerators: %s", ", ".join(profile.hardware_accels))
+        log.info("Hardware acceleration APIs: %s", ", ".join(profile.hardware_accels))
 
     return profile

@@ -1,219 +1,281 @@
+"""
+profile.py — System diagnostics for the Teleprompter App.
+
+Run from the project root:
+    teleprompter\Scripts\python profile.py
+
+Outputs:
+    full_system_profile.txt        — human-readable summary
+    logs/ffmpeg_encoders.txt       — full ffmpeg -encoders output
+    logs/ffmpeg_hwaccels.txt       — full ffmpeg -hwaccels output
+    logs/ffmpeg_encoder_verify.txt — hardware encoder verify results
+"""
+from __future__ import annotations
+
 import os
 import platform
-import psutil
 import subprocess
-import re
-import sounddevice as sd
-from datetime import datetime
+import sys
+import textwrap
+from pathlib import Path
 
-OUTPUT_FILE = "full_system_profile.txt"
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+FFMPEG_PATH = os.environ.get("FFMPEG_PATH", "ffmpeg")
+OUTPUT_FILE = Path("full_system_profile.txt")
+LOG_DIR = Path("logs")
 
-# ---------- CONFIG ----------
-# If ffmpeg is not in PATH, set full path here (optional)
-# Get-Command ffmpeg | Select-Object Source
+HARDWARE_ENCODER_CANDIDATES = [
+    "h264_nvenc",
+    "hevc_nvenc",
+    "h264_qsv",
+    "hevc_qsv",
+    "h264_amf",
+    "hevc_amf",
+    "av1_amf",
+    "av1_qsv",
+    "av1_nvenc",
+]
 
-FFMPEG_PATH = r"C:\Users\shakt\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe"
 
-# ---------- UTILS ----------
-def write(f, text=""):
-    f.write(str(text) + "\n")
-
-def section(f, title):
-    write(f, "\n" + "="*70)
-    write(f, title)
-    write(f, "="*70)
-
-def run_cmd(cmd):
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _run(args: list[str], timeout: int = 30) -> str:
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
-        return result.stdout + result.stderr
+        p = subprocess.run(
+            args, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+        )
+        return (p.stdout or "") + "\n" + (p.stderr or "")
+    except FileNotFoundError:
+        return f"[ERROR] Command not found: {args[0]}"
+    except subprocess.TimeoutExpired:
+        return f"[ERROR] Timed out after {timeout}s"
     except Exception as e:
-        return f"ERROR: {e}"
+        return f"[ERROR] {e}"
 
-# ---------- SYSTEM ----------
-def system_info(f):
-    section(f, "SYSTEM INFORMATION")
-    write(f, f"OS: {platform.system()} {platform.release()}")
-    write(f, f"Version: {platform.version()}")
-    write(f, f"Architecture: {platform.machine()}")
-    write(f, f"Processor: {platform.processor()}")
 
-# ---------- CPU ----------
-def cpu_info(f):
-    section(f, "CPU INFORMATION")
-    write(f, f"Physical cores: {psutil.cpu_count(logical=False)}")
-    write(f, f"Logical cores: {psutil.cpu_count(logical=True)}")
-    freq = psutil.cpu_freq()
-    if freq:
-        write(f, f"Max Frequency: {freq.max:.2f} MHz")
+def _save(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8", errors="replace")
 
-# ---------- RAM ----------
-def ram_info(f):
-    section(f, "RAM INFORMATION")
-    ram = psutil.virtual_memory()
-    write(f, f"Total: {ram.total / (1024**3):.2f} GB")
-    write(f, f"Available: {ram.available / (1024**3):.2f} GB")
 
-# ---------- STORAGE ----------
-def disk_info(f):
-    section(f, "STORAGE INFORMATION")
-    for p in psutil.disk_partitions():
+def _section(title: str, width: int = 72) -> str:
+    return f"\n{'=' * width}\n{title}\n{'=' * width}\n"
+
+
+# ---------------------------------------------------------------------------
+# System info
+# ---------------------------------------------------------------------------
+def system_info() -> str:
+    try:
+        import psutil
+        cpu_phys = psutil.cpu_count(logical=False)
+        cpu_log = psutil.cpu_count(logical=True)
+        freq = psutil.cpu_freq()
+        ram = psutil.virtual_memory()
+        ram_total = ram.total / 1024 ** 3
+        ram_avail = ram.available / 1024 ** 3
+        freq_str = f"Max Frequency: {freq.max:.0f} MHz" if freq else "Frequency: N/A"
+        cpu_str = (
+            f"Physical cores: {cpu_phys}\n"
+            f"Logical cores:  {cpu_log}\n"
+            f"{freq_str}\n"
+            f"RAM: {ram_total:.2f} GB total, {ram_avail:.2f} GB available"
+        )
+    except ImportError:
+        cpu_str = "psutil not installed — CPU/RAM info unavailable"
+
+    return (
+        _section("SYSTEM INFO") +
+        f"OS: {platform.system()} {platform.release()} ({platform.version()})\n"
+        f"Architecture: {platform.machine()}\n"
+        f"Python: {sys.version}\n"
+        f"{cpu_str}\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# FFmpeg version
+# ---------------------------------------------------------------------------
+def ffmpeg_version() -> str:
+    out = _run([FFMPEG_PATH, "-hide_banner", "-version"])
+    return _section("FFMPEG VERSION") + out
+
+
+# ---------------------------------------------------------------------------
+# Hardware accelerators
+# ---------------------------------------------------------------------------
+def ffmpeg_hwaccels() -> str:
+    out = _run([FFMPEG_PATH, "-hide_banner", "-hwaccels"])
+    _save(LOG_DIR / "ffmpeg_hwaccels.txt", out)
+    return _section("FFMPEG HARDWARE ACCELERATION APIS (ffmpeg -hwaccels)") + out
+
+
+# ---------------------------------------------------------------------------
+# Encoder list
+# ---------------------------------------------------------------------------
+def ffmpeg_encoders() -> str:
+    out = _run([FFMPEG_PATH, "-hide_banner", "-encoders"])
+    _save(LOG_DIR / "ffmpeg_encoders.txt", out)
+
+    # Extract and highlight known hardware/software encoders
+    relevant_hw = []
+    relevant_sw = []
+    for line in out.splitlines():
+        parts = line.strip().split()
+        if len(parts) < 2:
+            continue
+        name = parts[1]
+        if name in HARDWARE_ENCODER_CANDIDATES:
+            relevant_hw.append(f"  [HW] {name:20s} {' '.join(parts[2:])}")
+        for sw in ("libx264", "libx265", "ffv1", "mjpeg", "libopus", "aac", "flac"):
+            if name == sw:
+                relevant_sw.append(f"  [SW] {name:20s} {' '.join(parts[2:])}")
+
+    summary = ""
+    if relevant_hw:
+        summary += "\nDetected hardware encoders:\n" + "\n".join(relevant_hw) + "\n"
+    else:
+        summary += "\nNo known hardware encoders found in ffmpeg -encoders output.\n"
+    if relevant_sw:
+        summary += "\nDetected software encoders:\n" + "\n".join(relevant_sw) + "\n"
+
+    return (
+        _section("FFMPEG ENCODERS (ffmpeg -encoders — saved to logs/ffmpeg_encoders.txt)") +
+        summary +
+        "\nFull output saved to logs/ffmpeg_encoders.txt\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hardware encoder verification
+# ---------------------------------------------------------------------------
+def verify_hardware_encoders() -> str:
+    lines = [_section("HARDWARE ENCODER VERIFICATION (1-second test encode)")]
+    results = {}
+
+    for enc in HARDWARE_ENCODER_CANDIDATES:
+        cmd = [
+            FFMPEG_PATH, "-hide_banner", "-y",
+            "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30",
+            "-t", "1",
+            "-c:v", enc,
+            "-f", "null", "-",
+        ]
         try:
-            usage = psutil.disk_usage(p.mountpoint)
-            write(f, f"{p.device} ({p.fstype})")
-            write(f, f"  Total: {usage.total/(1024**3):.2f} GB")
-            write(f, f"  Free: {usage.free/(1024**3):.2f} GB")
-        except:
-            continue
+            p = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=20,
+            )
+            if p.returncode == 0:
+                results[enc] = ("PASS", "")
+                lines.append(f"  ✓ PASS  {enc}")
+            else:
+                stderr_tail = (p.stderr or "")[-300:].strip()
+                results[enc] = ("FAIL", stderr_tail)
+                lines.append(f"  ✗ FAIL  {enc}")
+                lines.append(f"          {stderr_tail[:120]}")
+        except FileNotFoundError:
+            results[enc] = ("SKIP", "ffmpeg not found")
+            lines.append(f"  - SKIP  {enc}  (ffmpeg not found)")
+        except subprocess.TimeoutExpired:
+            results[enc] = ("TIMEOUT", "")
+            lines.append(f"  - TIMEOUT  {enc}")
+        except Exception as e:
+            results[enc] = ("ERROR", str(e))
+            lines.append(f"  - ERROR  {enc}: {e}")
 
-# ---------- GPU (WMI) ----------
-def gpu_info(f):
-    section(f, "GPU INFORMATION (WMI)")
-    output = run_cmd(["wmic", "path", "win32_VideoController", "get", "name,AdapterRAM,DriverVersion"])
-    write(f, output.strip())
+    # Save detailed verify log
+    verify_log = "\n".join(
+        f"{enc}: {status} {reason}"
+        for enc, (status, reason) in results.items()
+    )
+    _save(LOG_DIR / "ffmpeg_encoder_verify.txt", verify_log)
 
-# ---------- FFMPEG ----------
-def ffmpeg_info(f):
-    section(f, "FFMPEG INFORMATION")
+    passcount = sum(1 for s, _ in results.values() if s == "PASS")
+    lines.append(f"\nResult: {passcount}/{len(HARDWARE_ENCODER_CANDIDATES)} hardware encoders verified usable.")
+    lines.append("Full results saved to logs/ffmpeg_encoder_verify.txt")
+    return "\n".join(lines) + "\n"
 
-    version = run_cmd([FFMPEG_PATH, "-version"])
-    if "ERROR" in version or not version.strip():
-        write(f, "FFmpeg not found or not accessible")
-        return False
 
-    write(f, version.split("\n")[0])
+# ---------------------------------------------------------------------------
+# Camera modes
+# ---------------------------------------------------------------------------
+def camera_modes() -> str:
+    out = _run([
+        FFMPEG_PATH, "-hide_banner", "-list_devices", "true",
+        "-f", "dshow", "-i", "dummy",
+    ])
 
-    write(f, "\nHardware Acceleration:")
-    write(f, run_cmd([FFMPEG_PATH, "-hwaccels"]))
+    import re
+    device_re = re.compile(r'\[(?:dshow|in#\d+).*?\]\s+"(.+?)"\s+\((video|audio)\)', re.IGNORECASE)
+    video_devices = []
+    for m in device_re.finditer(out):
+        if m.group(2).lower() == "video":
+            video_devices.append(m.group(1).strip())
 
-    write(f, "\nEncoders (filtered):")
-    enc = run_cmd([FFMPEG_PATH, "-encoders"])
-    for codec in ["h264", "hevc", "mpeg4", "vp9"]:
-        write(f, f"{codec}: {'YES' if codec in enc else 'NO'}")
+    section = _section(f"CAMERA DEVICES ({len(video_devices)} found)")
+    for name in video_devices:
+        section += f"  • {name}\n"
 
-    return True
+    for name in video_devices:
+        section += f"\nModes for: {name}\n"
+        mode_out = _run([
+            FFMPEG_PATH, "-hide_banner", "-f", "dshow",
+            "-list_options", "true", "-i", f"video={name}",
+        ], timeout=30)
+        for line in mode_out.splitlines():
+            if any(k in line for k in ("pixel_format", "vcodec", "min", "max")):
+                section += f"  {line.strip()}\n"
 
-# ---------- CAMERAS ----------
-def get_cameras():
-    output = run_cmd([FFMPEG_PATH, "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
-    lines = output.splitlines()
+    return section
 
-    cameras = []
-    current = None
 
-    for line in lines:
-        name_match = re.search(r'"(.*?)"\s+\(video\)', line)
-        if name_match:
-            current = name_match.group(1)
+# ---------------------------------------------------------------------------
+# Audio devices
+# ---------------------------------------------------------------------------
+def audio_devices() -> str:
+    out = _run([
+        FFMPEG_PATH, "-hide_banner", "-list_devices", "true",
+        "-f", "dshow", "-i", "dummy",
+    ])
+    import re
+    device_re = re.compile(r'\[(?:dshow|in#\d+).*?\]\s+"(.+?)"\s+\((video|audio)\)', re.IGNORECASE)
+    audio_devices_list = [
+        m.group(1).strip()
+        for m in device_re.finditer(out)
+        if m.group(2).lower() == "audio"
+    ]
+    section = _section(f"AUDIO DEVICES ({len(audio_devices_list)} found)")
+    for name in audio_devices_list:
+        section += f"  • {name}\n"
+    return section
 
-        alt_match = re.search(r'Alternative name "(.*?)"', line)
-        if alt_match and current:
-            cameras.append((current, alt_match.group(1)))
-            current = None
 
-    return cameras
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-def parse_camera_modes(output):
-    modes = {}
+    parts = [
+        system_info(),
+        ffmpeg_version(),
+        ffmpeg_hwaccels(),
+        ffmpeg_encoders(),
+        verify_hardware_encoders(),
+        camera_modes(),
+        audio_devices(),
+    ]
 
-    for line in output.splitlines():
-        fmt_match = re.search(r"(vcodec=\w+|pixel_format=\w+)", line)
-        if not fmt_match:
-            continue
+    full = "\n".join(parts)
+    _save(OUTPUT_FILE, full)
+    print(f"Saved to {OUTPUT_FILE}")
+    print(f"Logs saved in {LOG_DIR}/")
 
-        fmt = fmt_match.group(1)
-
-        res_match = re.search(r"min s=(\d+)x(\d+)", line)
-        if not res_match:
-            continue
-
-        w, h = map(int, res_match.groups())
-
-        fps_match = re.search(r"max s=\d+x\d+ fps=(\d+\.?\d*)", line)
-        if not fps_match:
-            continue
-
-        fps = float(fps_match.group(1))
-
-        key = (w, h)
-        if key not in modes or fps > modes[key][1]:
-            modes[key] = (fmt, fps)
-
-    return modes
-
-def camera_info(f):
-    section(f, "CAMERA INFORMATION (DIRECTSHOW)")
-
-    cameras = get_cameras()
-
-    if not cameras:
-        write(f, "No cameras detected")
-        return
-
-    for name, device in cameras:
-        write(f, f"\nCamera: {name}")
-
-        output = run_cmd([
-            FFMPEG_PATH,
-            "-f", "dshow",
-            "-list_options", "true",
-            "-i", f"video={device}"
-        ])
-
-        modes = parse_camera_modes(output)
-
-        if not modes:
-            write(f, "  No modes detected")
-            continue
-
-        for (w, h), (fmt, fps) in sorted(modes.items(), key=lambda x: x[0][0]*x[0][1]):
-            write(f, f"  {w}x{h} @ {fps} FPS [{fmt}]")
-
-# ---------- AUDIO ----------
-def audio_info(file):
-    section(file, "AUDIO INPUT DEVICES")
-
-    try:
-        devices = sd.query_devices()
-    except Exception as e:
-        write(file, f"Error: {e}")
-        return
-
-    for i, device in enumerate(devices):
-        if device['max_input_channels'] > 0:
-            write(file, f"\nDevice {i}: {device['name']}")
-            write(file, f"  Channels: {device['max_input_channels']}")
-            write(file, f"  Default SR: {device['default_samplerate']}")
-
-            for sr in [8000, 16000, 44100, 48000]:
-                try:
-                    sd.check_input_settings(device=i, samplerate=sr)
-                    write(file, f"    {sr} Hz: YES")
-                except:
-                    write(file, f"    {sr} Hz: NO")
-
-# ---------- MAIN ----------
-def main():
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        write(f, "FULL SYSTEM DIAGNOSTICS REPORT")
-        write(f, f"Generated: {datetime.now()}")
-
-        system_info(f)
-        cpu_info(f)
-        ram_info(f)
-        disk_info(f)
-        gpu_info(f)
-
-        ffmpeg_ok = ffmpeg_info(f)
-
-        if ffmpeg_ok:
-            camera_info(f)
-        else:
-            write(f, "\nCamera analysis skipped (FFmpeg required)")
-
-        audio_info(f)
-
-    print(f"\nSaved to {OUTPUT_FILE}")
 
 if __name__ == "__main__":
     main()

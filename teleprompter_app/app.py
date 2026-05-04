@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import time
 from pathlib import Path
@@ -135,29 +137,53 @@ class TeleprompterController(QObject):
         self._update_preview_state()
 
     def _update_preview_state(self):
-        use_camera = getattr(self.settings, "use_camera_background", False)
-        
-        if use_camera:
+        """Apply current preview mode from settings."""
+        mode = getattr(self.settings, "preview_background_mode", "color")
+        self._apply_background_mode(mode)
+
+    def _apply_background_mode(self, mode: str) -> None:
+        """Central handler for all preview background changes."""
+        if mode == "none":
+            self._stop_preview_and_clear()
+            return
+
+        if mode == "color":
+            self._stop_preview_and_clear()
+            self.window.preview_overlay.set_background_color(
+                self.settings.background_color or "#000000"
+            )
+            return
+
+        if mode == "camera":
             camera = self._resolve_preview_camera(self.settings)
-            if camera:
-                mapping = {
-                    "240p": (426, 240),
-                    "360p": (640, 360),
-                    "480p": (854, 480),
-                    "720p": (1280, 720),
-                }
-                res_key = getattr(self.settings, "preview_resolution", "360p")
-                width, height = mapping.get(res_key, (640, 360))
-                
-                self.preview_controller.start(camera.opencv_index, width, height)
-                self.window.preview_overlay.enable_preview(True)
+            if camera is None:
+                # No camera selected — fall back to color
+                self._stop_preview_and_clear()
                 return
-        
+            mapping = {
+                "240p": (426, 240),
+                "360p": (640, 360),
+                "480p": (854, 480),
+                "720p": (1280, 720),
+            }
+            res_key = getattr(self.settings, "preview_resolution", "360p")
+            width, height = mapping.get(res_key, (640, 360))
+            self.preview_controller.start(camera.opencv_index, width, height)
+            self.window.preview_overlay.enable_preview(True)
+
+    def _stop_preview_and_clear(self) -> None:
+        """Stop the preview worker and clear the preview frame."""
         self.preview_controller.stop(wait=False)
         self.window.preview_overlay.enable_preview(False)
+        self.window.preview_overlay.clear_preview_frame()
 
     def _on_background_mode_changed(self, mode: str):
-        self.apply_settings({"use_camera_background": (mode == "camera")})
+        self.settings = self.settings.updated({
+            "preview_background_mode": mode,
+            "use_camera_background": (mode == "camera"),
+        })
+        self.settings_manager.save(self.settings)
+        self._apply_background_mode(mode)
 
     def _on_preview_resolution_changed(self, res: str):
         self.apply_settings({"preview_resolution": res})
@@ -277,6 +303,11 @@ class TeleprompterController(QObject):
 
     def _resolve_preview_camera(self, settings: AppSettings):
         selected = self.window.main_controls.current_preview_camera()
+
+        # Explicit "no preview" selection
+        if selected == "__none__":
+            return None
+
         if selected == "__same_as_recording__":
             selected = (settings.recording_video_device or settings.video_device or "").strip()
 
@@ -357,6 +388,26 @@ class TeleprompterController(QObject):
                         f"Video recording requested but no camera is selected. "
                         f"device={self.settings.recording_video_device or self.settings.video_device!r}"
                     )
+
+                if self.settings.video_encoder_type == "hardware":
+                    hw_enc = self.settings.hardware_encoder
+                    if not hw_enc or hw_enc.lower() == "none":
+                        raise RuntimeError("Hardware encoding selected but no hardware encoder is configured.")
+                    
+                    enc_prof = self.system_profile.encoder_by_name(hw_enc)
+                    if enc_prof and enc_prof.verification_status != "usable":
+                        from teleprompter_app.recording.encoder_probe import verify_encoder_usable
+                        from PySide6.QtWidgets import QApplication
+                        from PySide6.QtCore import Qt
+                        QApplication.setOverrideCursor(Qt.WaitCursor)
+                        try:
+                            usable, reason = verify_encoder_usable("ffmpeg", hw_enc)
+                            if not usable:
+                                self.system_profile = self.system_profile.with_encoder_verification(hw_enc, "failed", reason)
+                                raise RuntimeError(f"Hardware encoder {hw_enc} failed to verify:\n{reason}")
+                            self.system_profile = self.system_profile.with_encoder_verification(hw_enc, "usable", "")
+                        finally:
+                            QApplication.restoreOverrideCursor()
 
             # Resolve preview camera for conflict check
             preview_camera = self._resolve_preview_camera(self.settings)
@@ -501,8 +552,12 @@ class TeleprompterController(QObject):
         else:
             self.window.set_status(f"Recording finished with code {return_code}")
             
-        # Restart preview conditionally with delay
-        if getattr(self, "_restart_preview_after_recording", False):
+        # Restart preview only if background mode is camera and preview was running before
+        current_mode = getattr(self.settings, "preview_background_mode", "color")
+        if current_mode == "none":
+            # User chose No Preview — do not restart
+            logger.debug("Preview not restarted: background mode is 'none'")
+        elif getattr(self, "_restart_preview_after_recording", False):
             self._schedule_preview_restart()
 
     def _schedule_preview_restart(self) -> None:
@@ -625,7 +680,7 @@ class TeleprompterController(QObject):
     def _encoding_risk_level(self, settings: AppSettings) -> str:
         if settings.video_encoder_type in ("copy", "hardware"):
             return "safe"
-            
+
         try:
             w, h = map(int, settings.resolution.split("x"))
             fps = float(settings.fps)
@@ -633,23 +688,45 @@ class TeleprompterController(QObject):
         except (ValueError, TypeError):
             return "medium"
 
-        codec = settings.software_encoder or settings.video_codec_mode
-        if codec in ("libx264_lossless", "ffv1"):
-            if pixels_per_second >= 1920 * 1080 * 60:
+        codec = settings.software_encoder or settings.video_codec_mode or ""
+
+        # Any lossless mode at 1080p60+ is high risk
+        if codec in ("libx264_lossless", "lossless_h264", "ffv1", "lossless_ffv1"):
+            if pixels_per_second >= 1920 * 1080 * 25:
                 return "high"
-        
-        if codec == "libx264_hq":
-            if pixels_per_second >= 3840 * 2160 * 30:
-                return "high"
-                
+
+        # High quality or standard at 4K25+ is high risk on low-end CPUs
+        if pixels_per_second >= 3840 * 2160 * 25:
+            return "high"
+
         return "medium"
 
     def _best_hardware_encoder(self) -> str | None:
-        available = set(self.system_profile.hardware_video_encoders)
-        priority = ["h264_nvenc", "hevc_nvenc", "h264_qsv", "hevc_qsv", "h264_amf", "hevc_amf"]
-        for encoder in priority:
-            if encoder in available:
-                return encoder
+        """Return the name of the best verified (or at least detected) hardware encoder."""
+        # First prefer verified usable ones
+        best = self.system_profile.best_hardware_encoder()
+        if best and best.verification_status == "usable":
+            return best.name
+        # Fall back to detected (unverified) — caller may trigger lazy verify
+        if best:
+            logger.info(
+                "Best hardware encoder %r is unverified — will attempt lazy verification.",
+                best.name
+            )
+            from teleprompter_app.recording.encoder_probe import verify_encoder_usable
+            from PySide6.QtWidgets import QApplication
+            from PySide6.QtCore import Qt
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                usable, reason = verify_encoder_usable("ffmpeg", best.name)
+                if usable:
+                    self.system_profile = self.system_profile.with_encoder_verification(best.name, "usable", "")
+                    return best.name
+                else:
+                    self.system_profile = self.system_profile.with_encoder_verification(best.name, "failed", reason)
+                    return None
+            finally:
+                QApplication.restoreOverrideCursor()
         return None
 
     def show(self):
