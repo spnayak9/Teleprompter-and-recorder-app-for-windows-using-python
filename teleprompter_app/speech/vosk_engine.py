@@ -54,13 +54,13 @@ class VoskSpeechRecognizer(SpeechRecognizer):
 
     def __init__(
         self,
-        model_path: Path,
+        model_path: str | Path,
         device_index: int | None,
         sample_rate: int = 16000,
         block_size: int = 4000,
         grammar: list[str] | None = None,
     ) -> None:
-        self.model_path = model_path
+        self.model_path = Path(model_path).expanduser().resolve()
         self.device_index = device_index
         self.sample_rate = sample_rate
         min_block = max(320, sample_rate // 50)
@@ -117,11 +117,10 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         emitted_partial_words: list[str] = []
 
         try:
-            if not self.model_path.exists():
-                raise RuntimeError(
-                    "Vosk model not found. Download a Vosk model, unzip it, and set "
-                    f"the model path in Settings. Current path: {self.model_path}"
-                )
+            model_path = Path(self.model_path).expanduser().resolve()
+
+            if not model_path.exists():
+                raise FileNotFoundError(f"Vosk model path does not exist: {model_path}")
 
             try:
                 from vosk import KaldiRecognizer, Model
@@ -152,7 +151,7 @@ class VoskSpeechRecognizer(SpeechRecognizer):
             if on_status:
                 on_status(self._model_status_message())
 
-            model = Model(str(self.model_path))
+            model = Model(str(model_path))
             recognizer = self._create_recognizer(KaldiRecognizer, model)
             recognizer.SetWords(True)
             if hasattr(recognizer, "SetPartialWords"):

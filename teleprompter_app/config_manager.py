@@ -22,6 +22,7 @@ class RecorderSettings:
     resolution: str = "1280x720"
     fps: int = 30
     pixel_format: str = "yuv420p"
+    input_format_kind: str = "pixel_format"
     video_codec: str = "ffv1"
     lossless: bool = True
 

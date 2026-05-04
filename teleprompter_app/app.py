@@ -71,6 +71,7 @@ class TeleprompterController(QObject):
         self.recording_timer = QTimer(self)
         self.recording_timer.timeout.connect(self._update_recording_status)
         self.recording_started_at = None
+        self._restart_preview_after_recording = False
         
         self._connect_signals()
         
@@ -237,6 +238,11 @@ class TeleprompterController(QObject):
             self.window.set_recording_directory(project_dir)
 
         try:
+            # STOP everything before starting recorder
+            self.stop_listening()
+            self._restart_preview_after_recording = getattr(self.settings, "use_camera_background", False)
+            self.preview_controller.stop(wait=True)
+
             config = RecordingConfig(
                 sample_rate=self.settings.recording_sample_rate,
                 bit_depth=self.settings.recording_bit_depth,
@@ -245,12 +251,9 @@ class TeleprompterController(QObject):
             )
             files = self.file_manager.prepare_session(Path(project_dir), config)
             
-            # CRITICAL: Release camera for FFmpeg
-            self.preview_controller.stop(wait=True)
-            
             self.recording_controller.start(self.settings, camera, files.video_path)
             
-            # Also start listening if not already
+            # Restart listening after FFmpeg starts (if desired)
             self.start_listening()
             
         except Exception as e:
@@ -278,8 +281,9 @@ class TeleprompterController(QObject):
         else:
             self.window.set_status(f"Recording finished with code {return_code}")
             
-        # Restart preview
-        self._update_preview_state()
+        # Restart preview conditionally with delay
+        if self._restart_preview_after_recording:
+            QTimer.singleShot(750, self._update_preview_state)
 
     def _on_recording_error(self, message: str):
         logger.error(f"Recording Error: {message}")

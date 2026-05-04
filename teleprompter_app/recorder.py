@@ -40,6 +40,16 @@ class FFmpegRecorderWorker(QObject):
         else:
             width, height = "640", "480"
 
+        input_format = (self.settings.pixel_format or "").strip()
+        input_format_kind = getattr(self.settings, "input_format_kind", "")
+
+        # Backward compatibility for old config
+        if not input_format_kind:
+            if input_format.lower() in {"mjpeg", "h264", "hevc"}:
+                input_format_kind = "vcodec"
+            else:
+                input_format_kind = "pixel_format"
+
         cmd = [
             self.ffmpeg_path,
             "-hide_banner",
@@ -54,11 +64,20 @@ class FFmpegRecorderWorker(QObject):
             f"{width}x{height}",
             "-framerate",
             str(self.settings.fps),
-            "-pixel_format",
-            self.settings.pixel_format,
-            "-i",
-            f"video={self.camera.ffmpeg_name}",
         ]
+
+        if input_format:
+            if input_format_kind == "vcodec":
+                cmd.extend(["-vcodec", input_format])
+            else:
+                cmd.extend(["-pixel_format", input_format])
+
+        cmd.extend(
+            [
+                "-i",
+                f"video={self.camera.ffmpeg_name}",
+            ]
+        )
 
         if self.settings.audio_device:
             cmd.extend(
@@ -115,14 +134,28 @@ class FFmpegRecorderWorker(QObject):
             self.started.emit()
 
             assert self.process.stderr is not None
+            recent_stderr = []
             for line in self.process.stderr:
                 if line:
-                    log.debug("ffmpeg: %s", line.rstrip())
+                    stripped = line.rstrip()
+                    log.debug("ffmpeg: %s", stripped)
+                    recent_stderr.append(stripped)
+                    if len(recent_stderr) > 15:
+                        recent_stderr.pop(0)
 
                 if self._stop_requested:
                     break
 
-            return_code = self.process.wait()
+            raw_code = self.process.wait()
+            return_code = self._normalize_return_code(raw_code)
+            
+            if return_code != 0 and not self._stop_requested:
+                error_msg = f"FFmpeg failed with code {return_code}"
+                if recent_stderr:
+                    error_msg += ":\n" + "\n".join(recent_stderr)
+                log.error(error_msg)
+                self.error.emit(error_msg)
+
             self.stopped.emit(return_code)
 
         except Exception as exc:
@@ -150,6 +183,18 @@ class FFmpegRecorderWorker(QObject):
                 self.process.wait(timeout=5)
             except Exception:
                 self.process.kill()
+
+    def _normalize_return_code(self, code: int | None) -> int:
+        if code is None:
+            return 0
+
+        code = int(code)
+
+        # Handle Windows overflow (4294967274 -> -22)
+        if code > 2_147_483_647:
+            code -= 4_294_967_296
+
+        return code
 
 
 class RecordingController(QObject):

@@ -9,7 +9,8 @@ class CameraMode:
     width: int
     height: int
     fps: float
-    pixel_format: str
+    format_name: str
+    format_kind: str  # "pixel_format" or "vcodec"
 
     @property
     def resolution(self) -> str:
@@ -62,7 +63,8 @@ class SystemProfile:
                             "width": m.width,
                             "height": m.height,
                             "fps": m.fps,
-                            "pixel_format": m.pixel_format,
+                            "format_name": m.format_name,
+                            "format_kind": m.format_kind,
                         }
                         for m in cam.formats
                     ],

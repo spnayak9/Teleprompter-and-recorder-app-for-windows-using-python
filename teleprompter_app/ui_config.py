@@ -213,14 +213,20 @@ class ConfigDialog(QDialog):
 
             formats = sorted(
                 {
-                    mode.pixel_format
+                    (mode.format_name, mode.format_kind)
                     for mode in cam.formats
                     if mode.resolution == resolution and float(mode.fps) == float(fps)
                 }
             )
 
-            for fmt in formats:
-                self.pixel_format.addItem(fmt, fmt)
+            for fmt_name, fmt_kind in formats:
+                self.pixel_format.addItem(
+                    fmt_name,
+                    {
+                        "format_name": fmt_name,
+                        "format_kind": fmt_kind,
+                    },
+                )
 
         self._on_format_changed()
 
@@ -270,12 +276,21 @@ class ConfigDialog(QDialog):
         except (ValueError, TypeError):
             fps_val = 30
 
+        fmt_data = self.pixel_format.currentData() or {}
+        if isinstance(fmt_data, dict):
+            fmt_name = fmt_data.get("format_name", "")
+            fmt_kind = fmt_data.get("format_kind", "pixel_format")
+        else:
+            fmt_name = str(fmt_data or "")
+            fmt_kind = "pixel_format"
+
         updates = {
             "video_device": self.video_device.currentData() or "",
             "audio_device": self.audio_device.currentData() or "",
             "resolution": self.resolution.currentData() or "",
             "fps": fps_val,
-            "pixel_format": self.pixel_format.currentData() or "",
+            "pixel_format": fmt_name,
+            "input_format_kind": fmt_kind,
             "video_codec": self.video_codec.currentData() or "",
             "lossless": self.lossless.isChecked(),
             "container": self.container.currentData() or "",

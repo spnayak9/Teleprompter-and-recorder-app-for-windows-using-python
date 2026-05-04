@@ -17,15 +17,15 @@ log = logging.getLogger(__name__)
 
 _DEVICE_RE = re.compile(r'\[(?:dshow|in#\d+).*?\]\s+"(.+?)"\s+\((video|audio)\)', re.IGNORECASE)
 
-_MODE_LINE_RE = re.compile(
-    r"pixel_format=(?P<pixfmt>[a-zA-Z0-9_]+).*?"
+_MODE_PIXEL_RE = re.compile(
+    r"pixel_format=(?P<fmt>[a-zA-Z0-9_]+).*?"
     r"min s=(?P<w>\d+)x(?P<h>\d+).*?"
     r"fps=(?P<fps>[0-9.]+)",
     re.IGNORECASE,
 )
 
-_ALT_MODE_LINE_RE = re.compile(
-    r"vcodec=(?P<vcodec>[a-zA-Z0-9_]+).*?"
+_MODE_VCODEC_RE = re.compile(
+    r"vcodec=(?P<fmt>[a-zA-Z0-9_]+).*?"
     r"min s=(?P<w>\d+)x(?P<h>\d+).*?"
     r"fps=(?P<fps>[0-9.]+)",
     re.IGNORECASE,
@@ -89,31 +89,45 @@ def _ffmpeg_list_camera_modes(ffmpeg_path: str, ffmpeg_device_name: str) -> tupl
         timeout=25,
     )
 
-    modes: set[tuple[int, int, float, str]] = set()
+    modes: set[tuple[int, int, float, str, str]] = set()
 
     for line in output.splitlines():
-        match = _MODE_LINE_RE.search(line)
+        match = _MODE_PIXEL_RE.search(line)
         if match:
-            pixfmt = match.group("pixfmt").strip()
-            width = int(match.group("w"))
-            height = int(match.group("h"))
-            fps = float(match.group("fps"))
-            modes.add((width, height, fps, pixfmt))
+            modes.add(
+                (
+                    int(match.group("w")),
+                    int(match.group("h")),
+                    float(match.group("fps")),
+                    match.group("fmt").strip(),
+                    "pixel_format",
+                )
+            )
             continue
 
-        alt = _ALT_MODE_LINE_RE.search(line)
-        if alt:
-            pixfmt = alt.group("vcodec").strip()
-            width = int(alt.group("w"))
-            height = int(alt.group("h"))
-            fps = float(alt.group("fps"))
-            modes.add((width, height, fps, pixfmt))
+        match = _MODE_VCODEC_RE.search(line)
+        if match:
+            modes.add(
+                (
+                    int(match.group("w")),
+                    int(match.group("h")),
+                    float(match.group("fps")),
+                    match.group("fmt").strip(),
+                    "vcodec",
+                )
+            )
 
     return tuple(
-        CameraMode(width=w, height=h, fps=fps, pixel_format=pixfmt)
-        for w, h, fps, pixfmt in sorted(
-            list(modes),
-            key=lambda x: (x[0] * x[1], x[2], x[3]),
+        CameraMode(
+            width=w,
+            height=h,
+            fps=fps,
+            format_name=fmt,
+            format_kind=kind,
+        )
+        for w, h, fps, fmt, kind in sorted(
+            modes,
+            key=lambda x: (x[0] * x[1], x[2], x[3], x[4]),
             reverse=True,
         )
     )
