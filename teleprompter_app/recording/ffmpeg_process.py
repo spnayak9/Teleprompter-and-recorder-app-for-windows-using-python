@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+import logging
+import subprocess
+from collections import deque
+
+from PySide6.QtCore import QObject, QThread, Signal, Slot
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_return_code(code: int | None) -> int:
+    if code is None:
+        return 0
+
+    code = int(code)
+
+    if code > 2_147_483_647:
+        code -= 4_294_967_296
+
+    return code
+
+
+class FFmpegProcessWorker(QObject):
+    started = Signal()
+    stopped = Signal(int)
+    error = Signal(str)
+
+    def __init__(self, cmd: list[str]) -> None:
+        super().__init__()
+        self.cmd = cmd
+        self.process: subprocess.Popen | None = None
+        self._stop_requested = False
+        self._stderr_tail: deque[str] = deque(maxlen=80)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            logger.info("Starting FFmpeg process: %s", " ".join(self.cmd))
+
+            self.process = subprocess.Popen(
+                self.cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW
+                if hasattr(subprocess, "CREATE_NO_WINDOW")
+                else 0,
+            )
+
+            self.started.emit()
+
+            assert self.process.stderr is not None
+
+            for line in self.process.stderr:
+                line = line.rstrip()
+                if line:
+                    self._stderr_tail.append(line)
+                    logger.debug("ffmpeg: %s", line)
+
+                if self._stop_requested:
+                    break
+
+            code = normalize_return_code(self.process.wait())
+
+            if code != 0 and not self._stop_requested:
+                tail = "\n".join(self._stderr_tail)
+                logger.error("FFmpeg failed with code %s:\n%s", code, tail)
+                self.error.emit(f"FFmpeg failed with code {code}\n{tail}")
+
+            self.stopped.emit(code)
+
+        except Exception as exc:
+            logger.exception("FFmpeg worker crashed")
+            self.error.emit(str(exc))
+            self.stopped.emit(-1)
+
+    @Slot()
+    def stop(self) -> None:
+        self._stop_requested = True
+
+        if self.process is None or self.process.poll() is not None:
+            return
+
+        try:
+            if self.process.stdin:
+                self.process.stdin.write("q\n")
+                self.process.stdin.flush()
+            self.process.wait(timeout=8)
+        except Exception:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except Exception:
+                self.process.kill()
+
+
+class FFmpegProcessController(QObject):
+    started = Signal()
+    stopped = Signal(int)
+    error = Signal(str)
+
+    def __init__(self, cmd: list[str]) -> None:
+        super().__init__()
+        self.cmd = cmd
+        self.thread: QThread | None = None
+        self.worker: FFmpegProcessWorker | None = None
+
+    def start(self) -> None:
+        if self.thread is not None:
+            raise RuntimeError("FFmpeg process already running")
+
+        self.thread = QThread()
+        self.worker = FFmpegProcessWorker(self.cmd)
+
+        self.worker.moveToThread(self.thread)
+
+        self.thread.started.connect(self.worker.run)
+        self.worker.started.connect(self.started)
+        self.worker.stopped.connect(self.stopped)
+        self.worker.error.connect(self.error)
+
+        self.worker.stopped.connect(self.thread.quit)
+        self.worker.stopped.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.finished.connect(self._cleanup)
+
+        self.thread.start()
+
+    def stop(self) -> None:
+        if self.worker:
+            self.worker.stop()
+
+    def _cleanup(self) -> None:
+        self.worker = None
+        self.thread = None
+
+    def is_running(self) -> bool:
+        return self.thread is not None and self.thread.isRunning()

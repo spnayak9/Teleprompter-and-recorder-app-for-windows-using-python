@@ -183,7 +183,7 @@ class ConfigDialog(QDialog):
 
             fps_values = sorted(
                 {
-                    mode.fps
+                    float(mode.fps)
                     for mode in cam.formats
                     if mode.resolution == resolution
                 },
@@ -191,7 +191,7 @@ class ConfigDialog(QDialog):
             )
 
             for fps in fps_values:
-                label = str(int(fps)) if float(fps).is_integer() else f"{fps:g}"
+                label = str(int(fps)) if fps.is_integer() else f"{fps:g}"
                 self.fps.addItem(label, fps)
 
         self._on_fps_changed()

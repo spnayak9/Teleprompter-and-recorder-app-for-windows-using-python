@@ -43,6 +43,12 @@ class PreviewOverlay(QWidget):
         self.fps_label.setFont(QFont("monospace", 10))
         self.fps_label.hide()
 
+        self.paused_label = QLabel("Preview paused during video recording", self)
+        self.paused_label.setStyleSheet("color: #ffffff; background: rgba(255,0,0,0.6); padding: 10px; border-radius: 4px;")
+        self.paused_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        self.paused_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.paused_label.hide()
+
         # Use StackedLayout to layer the teleprompter over the background
         self._stacked_layout = QStackedLayout(self)
         self._stacked_layout.setStackingMode(QStackedLayout.StackAll)
@@ -61,6 +67,7 @@ class PreviewOverlay(QWidget):
         if not self._preview_enabled:
             self.preview_label.hide()
             self.fps_label.hide()
+            self.paused_label.hide()
         else:
             # show current background color until frames arrive
             self.set_background_color(self._background_color)
@@ -79,11 +86,25 @@ class PreviewOverlay(QWidget):
 
     def set_frame(self, image: QImage) -> None:
         # image expected as QImage (already converted to RGB)
+        self.paused_label.hide()
         pix = QPixmap.fromImage(image)
         self.preview_label.setPixmap(pix)
         if not self.preview_label.isVisible():
             self.preview_label.show()
             self.fps_label.show()
+
+    def set_paused(self, paused: bool) -> None:
+        if paused:
+            self.paused_label.show()
+            self._update_paused_pos()
+        else:
+            self.paused_label.hide()
+
+    def _update_paused_pos(self) -> None:
+        self.paused_label.adjustSize()
+        x = (self.width() - self.paused_label.width()) // 2
+        y = (self.height() - self.paused_label.height()) // 2
+        self.paused_label.move(x, y)
 
     def set_fps(self, fps: float) -> None:
         self.fps_label.setText(f"FPS: {fps:.1f}")
@@ -94,6 +115,7 @@ class PreviewOverlay(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
         self.fps_label.move(self.width() - self.fps_label.width() - 12, 8)
+        self._update_paused_pos()
 
 
 class MainToolbarControls(QWidget):
@@ -110,12 +132,12 @@ class MainToolbarControls(QWidget):
         
         self.mode = QComboBox()
         options = [
-            "record only srt",
-            "record only audio",
-            "record only video",
-            "audio with srt",
-            "video with srt",
-            "audio and video only",
+            "srt only",
+            "audio only",
+            "video only",
+            "audio + srt",
+            "video + srt",
+            "audio + video",
             "audio + video + srt",
         ]
         for o in options:
@@ -156,3 +178,6 @@ class MainToolbarControls(QWidget):
         self.start_btn.setEnabled(not is_recording)
         self.stop_btn.setEnabled(is_recording)
         self.mode.setEnabled(not is_recording)
+
+    def current_mode(self) -> str:
+        return self.mode.currentText()

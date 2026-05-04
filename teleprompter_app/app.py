@@ -13,11 +13,14 @@ from teleprompter_app.core.parser import ScriptParser, InputType
 from teleprompter_app.core.tokenizer import ScriptTokenizer
 from teleprompter_app.core.alignment import AlignmentEngine
 from teleprompter_app.audio.mic_manager import MicrophoneManager
-from teleprompter_app.recorder import RecordingController
 from teleprompter_app.preview import PreviewController
 from teleprompter_app.system_probe import probe_system
-from teleprompter_app.recording.file_manager import RecordingFiles, RecordingFileManager
-from teleprompter_app.recording.audio_config import RecordingConfig
+from teleprompter_app.recording.session_controller import (
+    RecordingSessionController,
+    MODE_MAP,
+)
+from teleprompter_app.recording.session_paths import create_session_paths
+from teleprompter_app.recording.subtitle_generator import SubtitleGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +52,12 @@ class TeleprompterController(QObject):
         
         # Controllers
         self.preview_controller = PreviewController()
-        self.recording_controller = RecordingController()
+        self.recording_session = RecordingSessionController(ffmpeg_path="ffmpeg")
+        self.recording_session.error.connect(self._on_recording_error)
+        self.recording_session.stopped.connect(self._on_recording_stopped)
         
         # Hardware Managers
         self.mic_manager = MicrophoneManager()
-        self.file_manager = RecordingFileManager()
         
         # Core Logic
         self.parser = ScriptParser()
@@ -72,6 +76,10 @@ class TeleprompterController(QObject):
         self.recording_timer.timeout.connect(self._update_recording_status)
         self.recording_started_at = None
         self._restart_preview_after_recording = False
+        self._recognition_started_by_recording = False
+        self.subtitle_generator: SubtitleGenerator | None = None
+        self.current_recording_paths = None
+        self.current_recording_mode = None
         
         self._connect_signals()
         
@@ -99,9 +107,9 @@ class TeleprompterController(QObject):
         self.preview_controller.error.connect(self._on_preview_error)
         
         # Recording -> UI
-        self.recording_controller.started.connect(self._on_recording_started)
-        self.recording_controller.stopped.connect(self._on_recording_stopped)
-        self.recording_controller.error.connect(self._on_recording_error)
+        self.recording_session.started.connect(self._on_recording_started)
+        self.recording_session.stopped.connect(self._on_recording_stopped)
+        self.recording_session.error.connect(self._on_recording_error)
         
         # Recognition -> Controller/UI
         self.recognition_bridge.result_ready.connect(self._on_recognition_result)
@@ -209,9 +217,14 @@ class TeleprompterController(QObject):
         self.window.highlight_word(-1)
 
     def _on_recognition_result(self, result: RecognitionResult):
+        # 1. Highlighting / Alignment
         matches = self.alignment_engine.align_words(result.words)
         for match in matches:
             self.window.highlight_word(match.token_index, match.confidence)
+
+        # 2. Subtitle Generation
+        if self.subtitle_generator is not None:
+            self.subtitle_generator.add_result(result)
 
     def _on_recognition_error(self, message: str):
         logger.error(f"Recognition Error: {message}")
@@ -223,46 +236,93 @@ class TeleprompterController(QObject):
         if self.recording_started_at:
             return
 
-        camera = self.system_profile.camera_by_ffmpeg_name(self.settings.video_device)
-        if not camera:
-            QMessageBox.critical(self.window, "Error", "No camera selected or found.")
-            return
-
-        # Prepare output
-        project_dir = self.settings.output_dir
-        if not project_dir:
-            project_dir = self.window.choose_project_folder()
-            if not project_dir:
-                return
-            self.apply_settings({"output_dir": project_dir})
-            self.window.set_recording_directory(project_dir)
-
         try:
-            # STOP everything before starting recorder
-            self.stop_listening()
-            self._restart_preview_after_recording = getattr(self.settings, "use_camera_background", False)
-            self.preview_controller.stop(wait=True)
+            # 1. Resolve mode and paths
+            mode_key = (self.window.main_controls.current_mode() or "audio + video + srt").lower()
+            mode_spec = MODE_MAP.get(mode_key)
+            if mode_spec is None:
+                raise RuntimeError(f"Unsupported recording mode: {mode_key}")
 
-            config = RecordingConfig(
-                sample_rate=self.settings.recording_sample_rate,
-                bit_depth=self.settings.recording_bit_depth,
-                channels=self.settings.recording_channels,
-                output_format=self.settings.recording_format
+            camera = None
+            if mode_spec.video:
+                camera = self.system_profile.camera_by_ffmpeg_name(self.settings.video_device)
+                if camera is None:
+                    raise RuntimeError("Selected camera not found for video recording")
+
+            # Prepare directory
+            project_dir = self.settings.output_dir
+            if not project_dir:
+                project_dir = self.window.choose_project_folder()
+                if not project_dir:
+                    return
+                self.apply_settings({"output_dir": project_dir})
+                self.window.set_recording_directory(project_dir)
+
+            video_ext = getattr(self.settings, "container", "mkv")
+            audio_ext = "flac" if getattr(self.settings, "audio_codec", "flac") == "flac" else "mp3"
+
+            paths = create_session_paths(
+                project_dir,
+                video_ext=video_ext,
+                audio_ext=audio_ext,
             )
-            files = self.file_manager.prepare_session(Path(project_dir), config)
-            
-            self.recording_controller.start(self.settings, camera, files.video_path)
-            
-            # Restart listening after FFmpeg starts (if desired)
-            self.start_listening()
-            
+
+            self.current_recording_paths = paths
+            self.current_recording_mode = mode_spec
+
+            # 2. Preview/camera conflict (Option A: Pause preview during video recording)
+            self._restart_preview_after_recording = getattr(self.settings, "use_camera_background", False)
+            if mode_spec.video:
+                self.preview_controller.stop(wait=True)
+                self.window.preview_overlay.set_paused(True)
+
+            # 3. Recognition lifecycle for SRT
+            if mode_spec.srt:
+                if self.recognizer is None or not self.recognizer.is_running:
+                    self.start_listening()
+                    self._recognition_started_by_recording = True
+                else:
+                    self._recognition_started_by_recording = False
+
+            # 4. Start subtitle writer
+            if mode_spec.srt:
+                self.subtitle_generator = SubtitleGenerator(paths.subtitle_path)
+                self.subtitle_generator.start()
+
+            # 5. Start independent FFmpeg processes
+            self.recording_session.start(
+                settings=self.settings,
+                camera=camera,
+                paths=paths,
+            )
+
+            self.recording_started_at = time.monotonic()
+            self.recording_timer.start(1000)
+            self.window.set_recording(True, f"Recording (Mode: {mode_key})")
+            self.window.set_status(f"Recording session {paths.session_id} in progress...")
+
         except Exception as e:
             logger.exception("Failed to start recording")
-            QMessageBox.critical(self.window, "Error", f"Failed to start recording: {e}")
+            QMessageBox.critical(self.window, "Recording Error", str(e))
 
     @Slot()
     def stop_recording(self):
-        self.recording_controller.stop()
+        try:
+            if self.recording_session:
+                self.recording_session.stop()
+
+            if self.subtitle_generator:
+                self.subtitle_generator.stop()
+                self.subtitle_generator = None
+
+            if self._recognition_started_by_recording:
+                self.stop_listening()
+                self._recognition_started_by_recording = False
+
+            self.recording_timer.stop()
+        except Exception as e:
+            logger.exception("Failed to stop recording")
+            QMessageBox.critical(self.window, "Recording Error", str(e))
 
     def _on_recording_started(self):
         self.recording_started_at = time.time()
@@ -275,6 +335,7 @@ class TeleprompterController(QObject):
         self.recording_timer.stop()
         self.window.set_recording(False)
         self.window.statusBar().showMessage("Recording stopped.")
+        self.window.preview_overlay.set_paused(False)
         
         if return_code == 0:
             self.window.set_status("Recording saved successfully.")
