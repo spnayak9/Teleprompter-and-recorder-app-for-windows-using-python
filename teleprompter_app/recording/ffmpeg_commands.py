@@ -5,6 +5,9 @@ from pathlib import Path
 from teleprompter_app.config_manager import RecorderSettings
 from teleprompter_app.system_profile import CameraProfile
 
+VIDEO_SUFFIXES = {".mkv", ".mp4", ".avi", ".mov", ".webm"}
+AUDIO_SUFFIXES = {".flac", ".mp3", ".wav", ".m4a", ".aac", ".opus"}
+
 
 def _input_format_args(settings: RecorderSettings) -> list[str]:
     fmt = (settings.pixel_format or "").strip()
@@ -24,7 +27,11 @@ def build_video_command(
     settings: RecorderSettings,
     camera: CameraProfile,
     output_path: Path,
-) -> list[str]:
+    ) -> list[str]:
+    output_path = Path(output_path)
+    if output_path.suffix.lower() not in VIDEO_SUFFIXES:
+        raise RuntimeError(f"Invalid video output path: {output_path}")
+
     res = settings.resolution or "1280x720"
     if "x" in res:
         width, height = res.split("x", 1)
@@ -75,6 +82,10 @@ def build_audio_command(
     settings: RecorderSettings,
     output_path: Path,
 ) -> list[str]:
+    output_path = Path(output_path)
+    if output_path.suffix.lower() not in AUDIO_SUFFIXES:
+        raise RuntimeError(f"Invalid audio output path: {output_path}")
+
     if not settings.audio_device:
         raise RuntimeError("No audio device selected")
 

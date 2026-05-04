@@ -25,7 +25,9 @@ def main() -> int:
     controller = TeleprompterController(qt_app)
     controller.show()
 
-    return qt_app.exec()
+    code = qt_app.exec()
+    controller.shutdown()
+    return code
 
 
 if __name__ == "__main__":

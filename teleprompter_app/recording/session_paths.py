@@ -13,6 +13,24 @@ class RecordingSessionPaths:
     subtitle_path: Path
 
 
+VIDEO_EXTENSIONS = {"mkv", "mp4", "avi", "mov", "webm"}
+AUDIO_EXTENSIONS = {"flac", "mp3", "wav", "m4a", "aac", "opus"}
+
+
+def sanitize_video_ext(ext: str | None) -> str:
+    value = (ext or "").strip().lower().lstrip(".")
+    if value in VIDEO_EXTENSIONS:
+        return value
+    return "mkv"
+
+
+def sanitize_audio_ext(ext: str | None) -> str:
+    value = (ext or "").strip().lower().lstrip(".")
+    if value in AUDIO_EXTENSIONS:
+        return value
+    return "flac"
+
+
 def _next_session_id(root: Path) -> int:
     video_dir = root / "video"
     audio_dir = root / "audio"
@@ -55,8 +73,8 @@ def create_session_paths(
 
     session_id = _next_session_id(root)
 
-    video_ext = video_ext.lstrip(".")
-    audio_ext = audio_ext.lstrip(".")
+    video_ext = sanitize_video_ext(video_ext)
+    audio_ext = sanitize_audio_ext(audio_ext)
 
     return RecordingSessionPaths(
         session_id=session_id,

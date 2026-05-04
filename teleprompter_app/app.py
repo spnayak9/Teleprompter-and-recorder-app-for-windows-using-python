@@ -18,6 +18,7 @@ from teleprompter_app.system_probe import probe_system
 from teleprompter_app.recording.session_controller import (
     RecordingSessionController,
     MODE_MAP,
+    normalize_recording_mode,
 )
 from teleprompter_app.recording.session_paths import create_session_paths
 from teleprompter_app.recording.subtitle_generator import SubtitleGenerator
@@ -231,25 +232,96 @@ class TeleprompterController(QObject):
         self.stop_listening()
         QMessageBox.critical(self.window, "Recognition Error", message)
 
+    def _get_video_extension(self, settings: AppSettings) -> str:
+        container = (getattr(settings, "container", "") or "").strip().lower().lstrip(".")
+        if container in {"mkv", "mp4", "avi", "mov", "webm"}:
+            return container
+        return "mkv"
+
+    def _get_audio_extension(self, settings: AppSettings) -> str:
+        codec = (getattr(settings, "audio_codec", "") or "").strip().lower()
+        mapping = {
+            "flac": "flac",
+            "libmp3lame": "mp3",
+            "mp3": "mp3",
+            "pcm_s16le": "wav",
+            "aac": "m4a",
+            "libopus": "opus",
+            "opus": "opus",
+        }
+        return mapping.get(codec, "flac")
+
+    def _resolve_selected_camera(self, settings: AppSettings):
+        device = (settings.video_device or "").strip()
+        if device:
+            camera = self.system_profile.camera_by_ffmpeg_name(device)
+            if camera:
+                return camera
+            # Fallback by display name
+            for cam in self.system_profile.cameras:
+                if cam.name == device or cam.ffmpeg_name == device:
+                    return cam
+        if len(self.system_profile.cameras) == 1:
+            return self.system_profile.cameras[0]
+        return None
+
+    def _cleanup_failed_recording_paths(self, paths):
+        if not paths:
+            return
+        for path in (paths.video_path, paths.audio_path, paths.subtitle_path):
+            try:
+                if path.exists() and path.stat().st_size == 0:
+                    path.unlink()
+                    logger.info("Deleted empty failed recording file: %s", path)
+            except Exception:
+                logger.warning("Could not clean failed output: %s", path, exc_info=True)
+
+    def _pause_preview_for_recording(self) -> None:
+        self._restart_preview_after_recording = False
+        try:
+            if self.preview_controller and self.preview_controller.is_running():
+                self._restart_preview_after_recording = True
+                self.preview_controller.stop(wait=True)
+            self.window.preview_overlay.set_paused(True)
+        except Exception:
+            logger.exception("Could not pause preview before video recording")
+
+    def _ensure_recognition_for_recording(self) -> None:
+        if self.recognizer is None or not self.recognizer.is_running:
+            self.start_listening()
+            self._recognition_started_by_recording = True
+        else:
+            self._recognition_started_by_recording = False
+
     @Slot()
     def start_recording(self):
         if self.recording_started_at:
             return
 
+        paths = None
         try:
-            # 1. Resolve mode and paths
-            mode_key = (self.window.main_controls.current_mode() or "audio + video + srt").lower()
+            # 1. Resolve mode
+            raw_mode = self.window.main_controls.current_mode()
+            mode_key = normalize_recording_mode(raw_mode)
             mode_spec = MODE_MAP.get(mode_key)
             if mode_spec is None:
-                raise RuntimeError(f"Unsupported recording mode: {mode_key}")
+                raise RuntimeError(f"Unsupported recording mode: {raw_mode!r}")
 
+            # 2. Resolve camera only if video is needed
             camera = None
             if mode_spec.video:
-                camera = self.system_profile.camera_by_ffmpeg_name(self.settings.video_device)
+                camera = self._resolve_selected_camera(self.settings)
                 if camera is None:
-                    raise RuntimeError("Selected camera not found for video recording")
+                    raise RuntimeError(
+                        f"Video recording requested but no camera is selected. "
+                        f"device={self.settings.video_device!r}"
+                    )
 
-            # Prepare directory
+            # 3. Validate audio only if audio is needed
+            if mode_spec.audio and not self.settings.audio_device:
+                raise RuntimeError("Audio recording requested but no microphone is selected.")
+
+            # 4. Prepare directory
             project_dir = self.settings.output_dir
             if not project_dir:
                 project_dir = self.window.choose_project_folder()
@@ -258,38 +330,34 @@ class TeleprompterController(QObject):
                 self.apply_settings({"output_dir": project_dir})
                 self.window.set_recording_directory(project_dir)
 
-            video_ext = getattr(self.settings, "container", "mkv")
-            audio_ext = "flac" if getattr(self.settings, "audio_codec", "flac") == "flac" else "mp3"
+            output_root = Path(project_dir).expanduser().resolve()
+            output_root.mkdir(parents=True, exist_ok=True)
 
+            # 5. Create paths after validation
             paths = create_session_paths(
-                project_dir,
-                video_ext=video_ext,
-                audio_ext=audio_ext,
+                output_root,
+                video_ext=self._get_video_extension(self.settings),
+                audio_ext=self._get_audio_extension(self.settings),
             )
 
+            # 6. Store state
             self.current_recording_paths = paths
             self.current_recording_mode = mode_spec
 
-            # 2. Preview/camera conflict (Option A: Pause preview during video recording)
-            self._restart_preview_after_recording = getattr(self.settings, "use_camera_background", False)
+            # 7. Pause preview if video recording is required
             if mode_spec.video:
-                self.preview_controller.stop(wait=True)
-                self.window.preview_overlay.set_paused(True)
+                self._pause_preview_for_recording()
 
-            # 3. Recognition lifecycle for SRT
+            # 8. Ensure recognition for SRT
             if mode_spec.srt:
-                if self.recognizer is None or not self.recognizer.is_running:
-                    self.start_listening()
-                    self._recognition_started_by_recording = True
-                else:
-                    self._recognition_started_by_recording = False
+                self._ensure_recognition_for_recording()
 
-            # 4. Start subtitle writer
+            # 9. Start subtitle writer
             if mode_spec.srt:
                 self.subtitle_generator = SubtitleGenerator(paths.subtitle_path)
                 self.subtitle_generator.start()
 
-            # 5. Start independent FFmpeg processes
+            # 10. Start session
             self.recording_session.start(
                 settings=self.settings,
                 camera=camera,
@@ -303,6 +371,16 @@ class TeleprompterController(QObject):
 
         except Exception as e:
             logger.exception("Failed to start recording")
+            if self.subtitle_generator:
+                try:
+                    self.subtitle_generator.stop()
+                except Exception:
+                    pass
+                self.subtitle_generator = None
+            
+            if paths:
+                self._cleanup_failed_recording_paths(paths)
+
             QMessageBox.critical(self.window, "Recording Error", str(e))
 
     @Slot()
@@ -312,8 +390,10 @@ class TeleprompterController(QObject):
                 self.recording_session.stop()
 
             if self.subtitle_generator:
-                self.subtitle_generator.stop()
-                self.subtitle_generator = None
+                try:
+                    self.subtitle_generator.stop()
+                finally:
+                    self.subtitle_generator = None
 
             if self._recognition_started_by_recording:
                 self.stop_listening()
@@ -366,6 +446,34 @@ class TeleprompterController(QObject):
                 self.window.set_status(f"Recording... {h:02d}:{m:02d}:{s:02d}")
             except Exception:
                 pass
+
+    def shutdown(self):
+        logger.info("Application shutdown started")
+        try:
+            if self.recording_session:
+                self.recording_session.stop()
+        except Exception:
+            logger.exception("Could not stop recording session during shutdown")
+
+        try:
+            if self.subtitle_generator:
+                self.subtitle_generator.stop()
+                self.subtitle_generator = None
+        except Exception:
+            logger.exception("Could not stop subtitle generator during shutdown")
+
+        try:
+            if self.preview_controller:
+                self.preview_controller.stop(wait=True)
+        except Exception:
+            logger.exception("Could not stop preview during shutdown")
+
+        try:
+            self.stop_listening()
+        except Exception:
+            logger.exception("Could not stop recognition during shutdown")
+
+        logger.info("Application shutdown complete")
 
     def show(self):
         self.window.show()

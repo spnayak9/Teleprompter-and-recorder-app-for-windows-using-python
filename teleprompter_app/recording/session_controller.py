@@ -35,6 +35,36 @@ MODE_MAP: dict[str, RecordingModeSpec] = {
 }
 
 
+def normalize_recording_mode(value: str) -> str:
+    text = (value or "").strip().lower()
+    text = text.replace("&", "+")
+    text = text.replace(" and ", " + ")
+    text = text.replace(" with ", " + ")
+    text = " ".join(text.split())
+
+    aliases = {
+        "record only srt": "srt only",
+        "srt only": "srt only",
+        "only srt": "srt only",
+        "audio only": "audio only",
+        "record audio only": "audio only",
+        "video only": "video only",
+        "record video only": "video only",
+        "audio + srt": "audio + srt",
+        "audio srt": "audio + srt",
+        "video + srt": "video + srt",
+        "video srt": "video + srt",
+        "audio + video only": "audio + video",
+        "audio + video": "audio + video",
+        "video + audio": "audio + video",
+        "audio + video + srt": "audio + video + srt",
+        "video + audio + srt": "audio + video + srt",
+        "audio video srt": "audio + video + srt",
+    }
+
+    return aliases.get(text, text)
+
+
 class RecordingSessionController(QObject):
     started = Signal(object)
     stopped = Signal()
@@ -55,11 +85,20 @@ class RecordingSessionController(QObject):
         camera: CameraProfile | None,
         paths: RecordingSessionPaths,
     ) -> RecordingModeSpec:
-        mode_key = (settings.recording_mode or "").strip().lower()
+        mode_key = normalize_recording_mode(settings.recording_mode)
         spec = MODE_MAP.get(mode_key)
 
         if spec is None:
             raise RuntimeError(f"Unsupported recording mode: {settings.recording_mode}")
+
+        logger.info(
+            "Recording mode resolved: raw=%r normalized=%r video=%s audio=%s srt=%s",
+            settings.recording_mode,
+            mode_key,
+            spec.video,
+            spec.audio,
+            spec.srt,
+        )
 
         if spec.video and camera is None:
             raise RuntimeError("Video recording requested but no camera is selected")
@@ -77,7 +116,7 @@ class RecordingSessionController(QObject):
                 paths.video_path,
             )
             self.video_process = FFmpegProcessController(video_cmd)
-            self.video_process.error.connect(self.error)
+            self.video_process.error.connect(self._on_process_error)
             self.video_process.stopped.connect(self._on_process_stopped)
             self._running_processes += 1
             self.video_process.start()
@@ -89,7 +128,7 @@ class RecordingSessionController(QObject):
                 paths.audio_path,
             )
             self.audio_process = FFmpegProcessController(audio_cmd)
-            self.audio_process.error.connect(self.error)
+            self.audio_process.error.connect(self._on_process_error)
             self.audio_process.stopped.connect(self._on_process_stopped)
             self._running_processes += 1
             self.audio_process.start()
@@ -100,13 +139,15 @@ class RecordingSessionController(QObject):
 
     def stop(self) -> None:
         if self.video_process:
-            self.video_process.stop()
+            self.video_process.stop_and_wait()
 
         if self.audio_process:
-            self.audio_process.stop()
+            self.audio_process.stop_and_wait()
 
-        if not self.video_process and not self.audio_process:
-            self.stopped.emit()
+        self.video_process = None
+        self.audio_process = None
+        self._running_processes = 0
+        self.stopped.emit()
 
     def _on_process_stopped(self, _code: int) -> None:
         self._running_processes -= 1
@@ -115,3 +156,14 @@ class RecordingSessionController(QObject):
             self.video_process = None
             self.audio_process = None
             self.stopped.emit()
+
+    def _on_process_error(self, message: str) -> None:
+        logger.error("Recording process failed: %s", message)
+
+        if self.video_process:
+            self.video_process.stop()
+
+        if self.audio_process:
+            self.audio_process.stop()
+
+        self.error.emit(message)

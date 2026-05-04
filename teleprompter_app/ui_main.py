@@ -131,17 +131,13 @@ class MainToolbarControls(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         
         self.mode = QComboBox()
-        options = [
-            "srt only",
-            "audio only",
-            "video only",
-            "audio + srt",
-            "video + srt",
-            "audio + video",
-            "audio + video + srt",
-        ]
-        for o in options:
-            self.mode.addItem(o)
+        self.mode.addItem("SRT only", "srt only")
+        self.mode.addItem("Audio only", "audio only")
+        self.mode.addItem("Video only", "video only")
+        self.mode.addItem("Audio + SRT", "audio + srt")
+        self.mode.addItem("Video + SRT", "video + srt")
+        self.mode.addItem("Audio + Video", "audio + video")
+        self.mode.addItem("Audio + Video + SRT", "audio + video + srt")
             
         self.background_selector = QComboBox()
         self.background_selector.addItem("Color", "color")
@@ -170,7 +166,9 @@ class MainToolbarControls(QWidget):
         # Connect internal signals
         self.start_btn.clicked.connect(lambda _checked=False: self.start_recording_requested.emit())
         self.stop_btn.clicked.connect(lambda _checked=False: self.stop_recording_requested.emit())
-        self.mode.currentTextChanged.connect(self.mode_changed.emit)
+        self.mode.currentIndexChanged.connect(
+            lambda _i: self.mode_changed.emit(self.mode.currentData())
+        )
         self.background_selector.currentIndexChanged.connect(lambda _idx: self.background_changed.emit(str(self.background_selector.currentData())))
         self.preview_res_selector.currentTextChanged.connect(self.preview_resolution_changed.emit)
 

@@ -134,6 +134,16 @@ class FFmpegProcessController(QObject):
         if self.worker:
             self.worker.stop()
 
+    def stop_and_wait(self, timeout_ms: int = 5000) -> None:
+        if self.worker:
+            self.worker.stop()
+
+        if self.thread and self.thread.isRunning():
+            self.thread.quit()
+            self.thread.wait(timeout_ms)
+
+        self._cleanup()
+
     def _cleanup(self) -> None:
         self.worker = None
         self.thread = None
