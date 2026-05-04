@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
+    QLabel,
     QLineEdit,
     QPushButton,
     QTabWidget,
@@ -81,23 +83,73 @@ class ConfigDialog(QDialog):
         self.recording_camera.currentIndexChanged.connect(self._on_camera_changed)
 
     def _build_video_tab(self) -> None:
-        form = QFormLayout(self.video_tab)
-
+        main_layout = QVBoxLayout(self.video_tab)
+        
+        # Capture settings
+        capture_group = QGroupBox("Capture Source")
+        capture_form = QFormLayout(capture_group)
         self.resolution = QComboBox()
         self.fps = QComboBox()
         self.pixel_format = QComboBox()
-        self.video_codec = QComboBox()
-        self.lossless = QCheckBox()
+        capture_form.addRow("Resolution", self.resolution)
+        capture_form.addRow("FPS", self.fps)
+        capture_form.addRow("Pixel format", self.pixel_format)
+        main_layout.addWidget(capture_group)
 
-        form.addRow("Resolution", self.resolution)
-        form.addRow("FPS", self.fps)
-        form.addRow("Pixel format", self.pixel_format)
-        form.addRow("Video codec", self.video_codec)
-        form.addRow("Lossless (h.264/ffv1 only)", self.lossless)
+        # Encoding Settings
+        encoding_group = QGroupBox("Video Encoding")
+        self.encoding_form = QFormLayout(encoding_group)
+        
+        self.encoder_type = QComboBox()
+        self.encoder_type.addItem("Camera Stream Copy (Recommended for 4K)", "copy")
+        self.encoder_type.addItem("Software Encoding (CPU)", "software")
+        self.encoder_type.addItem("Hardware Encoding (GPU)", "hardware")
+        
+        self.software_codec = QComboBox()
+        self.software_codec.addItem("H.264 High Quality CPU", "libx264_hq")
+        self.software_codec.addItem("H.264 Lossless CPU (High Risk)", "libx264_lossless")
+        self.software_codec.addItem("FFV1 Lossless CPU (Archival)", "ffv1")
+        self.software_codec.addItem("MJPEG Software", "mjpeg")
+        
+        self.hardware_codec = QComboBox()
+        
+        self.quality_preset = QComboBox()
+        self.quality_preset.addItem("High Quality (Balanced)", "hq")
+        self.quality_preset.addItem("Visually Lossless", "visually_lossless")
+        self.quality_preset.addItem("Maximum Performance", "fast")
+        
+        self.encoding_form.addRow("Encoding Mode", self.encoder_type)
+        self.encoding_form.addRow("Software Codec", self.software_codec)
+        self.encoding_form.addRow("Hardware Codec", self.hardware_codec)
+        self.encoding_form.addRow("Quality Preset", self.quality_preset)
+        
+        # Help Label
+        self.help_label = QLabel()
+        self.help_label.setWordWrap(True)
+        self.help_label.setStyleSheet("color: #888; font-size: 11px;")
+        self.encoding_form.addRow(self.help_label)
+        
+        main_layout.addWidget(encoding_group)
+        main_layout.addStretch()
 
         self.resolution.currentIndexChanged.connect(self._on_resolution_changed)
         self.fps.currentIndexChanged.connect(self._on_fps_changed)
-        self.pixel_format.currentIndexChanged.connect(self._on_format_changed)
+        self.encoder_type.currentIndexChanged.connect(self._on_encoding_mode_changed)
+        self._on_encoding_mode_changed()
+    
+    def _on_encoding_mode_changed(self) -> None:
+        mode = self.encoder_type.currentData()
+        
+        self.software_codec.setEnabled(mode == "software")
+        self.hardware_codec.setEnabled(mode == "hardware")
+        self.quality_preset.setEnabled(mode != "copy")
+        
+        if mode == "copy":
+            self.help_label.setText("<b>Stream Copy</b>: Preserves camera's raw feed without re-encoding. Best for 4K stability.")
+        elif mode == "software":
+            self.help_label.setText("<b>Software</b>: High compatibility, but very heavy at 4K. May drop frames.")
+        elif mode == "hardware":
+            self.help_label.setText("<b>Hardware</b>: Low CPU usage. Uses GPU for smooth real-time encoding.")
 
     def _build_output_tab(self) -> None:
         form = QFormLayout(self.output_tab)
@@ -140,7 +192,6 @@ class ConfigDialog(QDialog):
         self.recording_camera.clear()
         self.preview_camera.clear()
         self.audio_device.clear()
-        self.video_codec.clear()
         self.container.clear()
 
         self.preview_camera.addItem("Same as Recording Camera", "__same_as_recording__")
@@ -151,22 +202,17 @@ class ConfigDialog(QDialog):
         for mic in self.system_profile.audio_inputs:
             self.audio_device.addItem(mic.name, mic.ffmpeg_name)
 
-        self.video_codec.clear()
-        self.video_codec.addItem("Camera Stream Copy (recommended)", "copy")
-        self.video_codec.addItem("H.264 High Quality (smaller file)", "libx264_hq")
-        self.video_codec.addItem("H.264 Lossless (experimental/high CPU)", "libx264_lossless")
-        self.video_codec.addItem("FFV1 Lossless (archival/heavy)", "ffv1")
-        self.video_codec.addItem("MJPEG", "mjpeg")
-        
-        # Add any other system discovered codecs if needed
-        # for codec in self.system_profile.video_codecs:
-        #    if codec not in ["copy", "libx264", "ffv1", "mjpeg"]:
-        #        self.video_codec.addItem(codec, codec)
+        self.hardware_codec.clear()
+        if not self.system_profile.hardware_video_encoders:
+            self.hardware_codec.addItem("No hardware encoders detected", None)
+        else:
+            for enc in self.system_profile.hardware_video_encoders:
+                from teleprompter_app.system_probe import HARDWARE_ENCODERS
+                label = HARDWARE_ENCODERS.get(enc, enc)
+                self.hardware_codec.addItem(label, enc)
 
         for muxer in self.system_profile.containers:
             self.container.addItem(muxer, muxer)
-
-        self.lossless.setChecked(self.settings.lossless)
 
         self._on_camera_changed()
 
@@ -289,15 +335,18 @@ class ConfigDialog(QDialog):
 
         try:
             fps_val = float(self.settings.fps)
-            if not self._set_combo_by_data(self.fps, fps_val):
-                if self.fps.count() > 0:
-                    self.fps.setCurrentIndex(0)
+            self._set_combo_by_data(self.fps, fps_val)
         except (ValueError, TypeError):
-            if self.fps.count() > 0:
-                self.fps.setCurrentIndex(0)
+            pass
         self._on_fps_changed()
 
-        self._set_combo_by_data(self.video_codec, self.settings.video_codec)
+        # Encoding Mode & Codecs
+        self._set_combo_by_data(self.encoder_type, self.settings.video_encoder_type)
+        self._set_combo_by_data(self.software_codec, self.settings.software_encoder or self.settings.video_codec_mode)
+        self._set_combo_by_data(self.hardware_codec, self.settings.hardware_encoder)
+        self._set_combo_by_data(self.quality_preset, self.settings.quality_preset)
+        self._on_encoding_mode_changed()
+
         self._set_combo_by_data(self.audio_device, self.settings.audio_device)
         self._set_combo_by_data(self.container, self.settings.container)
         
@@ -324,10 +373,10 @@ class ConfigDialog(QDialog):
         """
         Save must only persist values and close dialog.
         """
-        current = self.manager.load()
+        current = self.settings
         
         try:
-            fps_val = int(float(self.fps.currentData() or 0))
+            fps_val = int(float(self.fps.currentData() or 30))
         except (ValueError, TypeError):
             fps_val = 30
 
@@ -348,8 +397,14 @@ class ConfigDialog(QDialog):
             "fps": fps_val,
             "pixel_format": fmt_name,
             "input_format_kind": fmt_kind,
-            "video_codec": self.video_codec.currentData() or "",
-            "lossless": self.lossless.isChecked(),
+            
+            # New Encoding Settings
+            "video_encoder_type": self.encoder_type.currentData(),
+            "software_encoder": self.software_codec.currentData(),
+            "hardware_encoder": self.hardware_codec.currentData(),
+            "quality_preset": self.quality_preset.currentData(),
+            "video_codec_mode": self.software_codec.currentData() if self.encoder_type.currentData() == "software" else self.encoder_type.currentData(),
+            
             "container": self.container.currentData() or "",
             "output_dir": self.output_dir.text().strip(),
             "recording_sample_rate": int(self.recording_sample_rate.currentData() or 48000),
@@ -359,6 +414,6 @@ class ConfigDialog(QDialog):
         }
 
         settings = current.updated(updates)
-        self.manager.save(settings)
+        ConfigManager().save(settings)
         self.saved.emit(settings)
         self.accept()

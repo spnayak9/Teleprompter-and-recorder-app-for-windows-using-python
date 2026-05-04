@@ -24,6 +24,25 @@ PIXEL_RE = re.compile(r"pixel_format=(?P<fmt>[a-zA-Z0-9_]+)", re.IGNORECASE)
 VCODEC_RE = re.compile(r"vcodec=(?P<fmt>[a-zA-Z0-9_]+)", re.IGNORECASE)
 INTERVAL_RE = re.compile(r"(?:min|max)\s*interval=(?P<interval>\d+)", re.IGNORECASE)
 
+HARDWARE_ENCODERS = {
+    "h264_nvenc": "NVIDIA H.264 NVENC",
+    "hevc_nvenc": "NVIDIA HEVC NVENC",
+    "av1_nvenc": "NVIDIA AV1 NVENC",
+    "h264_qsv": "Intel H.264 Quick Sync",
+    "hevc_qsv": "Intel HEVC Quick Sync",
+    "av1_qsv": "Intel AV1 Quick Sync",
+    "h264_amf": "AMD H.264 AMF",
+    "hevc_amf": "AMD HEVC AMF",
+    "av1_amf": "AMD AV1 AMF",
+}
+
+SOFTWARE_ENCODERS = {
+    "libx264": "H.264 Software",
+    "libx265": "HEVC Software",
+    "ffv1": "FFV1 Lossless",
+    "mjpeg": "MJPEG Software",
+}
+
 
 def interval_100ns_to_fps(interval: int) -> float:
     if interval <= 0:
@@ -214,15 +233,15 @@ def _verify_camera_mode(
         return False
 
 
-def _ffmpeg_codecs(ffmpeg_path: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _ffmpeg_codecs(ffmpeg_path: str) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     output = _run_ffmpeg([ffmpeg_path, "-hide_banner", "-codecs"], timeout=20)
 
     video: list[str] = []
     audio: list[str] = []
+    hardware_video: list[str] = []
+    software_video: list[str] = []
 
     for line in output.splitlines():
-        # FFmpeg codec table shape:
-        # DEV.LS h264 ...
         if len(line) < 8:
             continue
 
@@ -232,7 +251,6 @@ def _ffmpeg_codecs(ffmpeg_path: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
             continue
 
         codec = parts[0]
-
         can_encode = "E" in flags
         is_video = "V" in flags
         is_audio = "A" in flags
@@ -242,10 +260,29 @@ def _ffmpeg_codecs(ffmpeg_path: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
 
         if is_video:
             video.append(codec)
+            if codec in HARDWARE_ENCODERS:
+                hardware_video.append(codec)
+            elif codec in SOFTWARE_ENCODERS:
+                software_video.append(codec)
         elif is_audio:
             audio.append(codec)
 
-    return tuple(sorted(set(video))), tuple(sorted(set(audio)))
+    return (
+        tuple(sorted(set(video))),
+        tuple(sorted(set(audio))),
+        tuple(sorted(set(hardware_video))),
+        tuple(sorted(set(software_video))),
+    )
+
+
+def _ffmpeg_hwaccels(ffmpeg_path: str) -> tuple[str, ...]:
+    output = _run_ffmpeg([ffmpeg_path, "-hide_banner", "-hwaccels"], timeout=15)
+    accels: list[str] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if line and not line.startswith("Hardware"):
+            accels.append(line)
+    return tuple(sorted(set(accels)))
 
 
 def _ffmpeg_muxers(ffmpeg_path: str) -> tuple[str, ...]:
@@ -297,8 +334,9 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
             )
         )
 
-    video_codecs, audio_codecs = _ffmpeg_codecs(ffmpeg_path)
+    video_codecs, audio_codecs, hw_video, sw_video = _ffmpeg_codecs(ffmpeg_path)
     containers = _ffmpeg_muxers(ffmpeg_path)
+    hw_accels = _ffmpeg_hwaccels(ffmpeg_path)
 
     profile = SystemProfile(
         cameras=tuple(cameras),
@@ -309,6 +347,9 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
         video_codecs=video_codecs,
         audio_codecs=audio_codecs,
         containers=containers,
+        hardware_video_encoders=hw_video,
+        software_video_encoders=sw_video,
+        hardware_accels=hw_accels,
     )
 
     for cam in profile.cameras:
@@ -323,9 +364,17 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
             )
 
     log.info(
-        "System profile ready: %s cameras, %s audio inputs",
+        "System profile ready: %s cameras, %s audio inputs, %s hw encoders, %s sw encoders",
         len(profile.cameras),
         len(profile.audio_inputs),
+        len(profile.hardware_video_encoders),
+        len(profile.software_video_encoders),
     )
+    if profile.hardware_video_encoders:
+        log.info("Hardware encoders: %s", ", ".join(profile.hardware_video_encoders))
+    if profile.software_video_encoders:
+        log.info("Software encoders: %s", ", ".join(profile.software_video_encoders))
+    if profile.hardware_accels:
+        log.info("Hardware accelerators: %s", ", ".join(profile.hardware_accels))
 
     return profile

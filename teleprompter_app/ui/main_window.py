@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.settings_dock)
 
         self._build_toolbar()
+        self.main_controls.populate_preview_cameras(system_profile.cameras)
         self._connect_signals()
         self.statusBar().showMessage("Ready")
 

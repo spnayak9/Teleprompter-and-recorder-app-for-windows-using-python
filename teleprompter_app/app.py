@@ -117,6 +117,7 @@ class TeleprompterController(QObject):
         self.recording_session.started.connect(self._on_recording_started)
         self.recording_session.stopped.connect(self._on_recording_stopped)
         self.recording_session.error.connect(self._on_recording_error)
+        self.recording_session.performance_warning.connect(self._on_performance_warning)
         
         # Recognition -> Controller/UI
         self.recognition_bridge.result_ready.connect(self._on_recognition_result)
@@ -324,6 +325,9 @@ class TeleprompterController(QObject):
 
     @Slot()
     def start_recording(self):
+        if not self._validate_recording_settings():
+            return
+
         if self._is_recording:
             return
 
@@ -332,27 +336,6 @@ class TeleprompterController(QObject):
             # 1. Force settings mode from live UI data
             live_mode = self.window.main_controls.current_recording_mode()
             self.settings = self.settings.updated({"recording_mode": live_mode})
-            
-            # Phase 3: Safe mode warning for 4K lossless
-            width = 0
-            try:
-                res = self.settings.resolution or "0x0"
-                width = int(res.split("x")[0])
-            except Exception:
-                pass
-
-            if width >= 3840 and self.settings.fps >= 30 and self.settings.video_codec in {"libx264", "libx264_lossless", "ffv1"}:
-                reply = QMessageBox.warning(
-                    self.window,
-                    "High Load Warning",
-                    "4K30 lossless recording is extremely heavy and may freeze.\n\n"
-                    "It is recommended to use 'copy' (Camera Stream Copy) instead.\n\n"
-                    "Continue anyway?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.No:
-                    return
 
             logger.info("Start recording requested. live_mode=%r settings.recording_mode=%r", 
                         live_mode, self.settings.recording_mode)
@@ -545,6 +528,13 @@ class TeleprompterController(QObject):
         logger.error(f"Preview Error: {message}")
         self.window.set_status(f"Preview Error: {message}")
 
+    def _on_performance_warning(self, message: str):
+        now = time.time()
+        if now - getattr(self, "_last_perf_warning_time", 0) > 10:
+            logger.warning(f"Performance Warning: {message}")
+            self.window.statusBar().showMessage(f"⚠ {message}", 5000)
+            self._last_perf_warning_time = now
+
     def _update_recording_status(self):
         if self.recording_started_at:
             elapsed = int(time.time() - self.recording_started_at)
@@ -584,6 +574,83 @@ class TeleprompterController(QObject):
             logger.exception("Could not stop recognition during shutdown")
 
         logger.info("Application shutdown complete")
+
+    def _validate_recording_settings(self) -> bool:
+        risk = self._encoding_risk_level(self.settings)
+        if risk != "high":
+            return True
+
+        msg = QMessageBox(self.window)
+        msg.setWindowTitle("High Performance Risk")
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText("The selected encoding mode may not keep up in real-time at this resolution/FPS.")
+        msg.setInformativeText(
+            f"Target: {self.settings.resolution} @ {self.settings.fps} FPS\n"
+            f"Encoder: {self.settings.software_encoder}\n\n"
+            "This can produce frozen, stuttered, or incomplete video files."
+        )
+        
+        copy_btn = msg.addButton("Use Camera Stream Copy", QMessageBox.ButtonRole.ActionRole)
+        hw_btn = None
+        best_hw = self._best_hardware_encoder()
+        if best_hw:
+            hw_btn = msg.addButton("Use Best Hardware Encoder", QMessageBox.ButtonRole.ActionRole)
+        
+        continue_btn = msg.addButton("Continue Anyway", QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = msg.addButton(QMessageBox.StandardButton.Cancel)
+        
+        msg.exec()
+        clicked = msg.clickedButton()
+        
+        if clicked == cancel_btn:
+            return False
+        elif clicked == copy_btn:
+            self.settings = self.settings.updated({
+                "video_encoder_type": "copy",
+                "video_codec_mode": "copy"
+            })
+            ConfigManager().save(self.settings)
+            return True
+        elif hw_btn and clicked == hw_btn:
+            self.settings = self.settings.updated({
+                "video_encoder_type": "hardware",
+                "hardware_encoder": best_hw,
+                "video_codec_mode": best_hw
+            })
+            ConfigManager().save(self.settings)
+            return True
+        
+        return True
+
+    def _encoding_risk_level(self, settings: AppSettings) -> str:
+        if settings.video_encoder_type in ("copy", "hardware"):
+            return "safe"
+            
+        try:
+            w, h = map(int, settings.resolution.split("x"))
+            fps = float(settings.fps)
+            pixels_per_second = w * h * fps
+        except (ValueError, TypeError):
+            return "medium"
+
+        codec = settings.software_encoder or settings.video_codec_mode
+        if codec in ("libx264_lossless", "ffv1"):
+            if pixels_per_second >= 1920 * 1080 * 60:
+                return "high"
+        
+        if codec == "libx264_hq":
+            if pixels_per_second >= 3840 * 2160 * 30:
+                return "high"
+                
+        return "medium"
+
+    def _best_hardware_encoder(self) -> str | None:
+        available = set(self.system_profile.hardware_video_encoders)
+        priority = ["h264_nvenc", "hevc_nvenc", "h264_qsv", "hevc_qsv", "h264_amf", "hevc_amf"]
+        for encoder in priority:
+            if encoder in available:
+                return encoder
+        return None
 
     def show(self):
         self.window.show()

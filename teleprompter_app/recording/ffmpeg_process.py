@@ -36,6 +36,7 @@ class FFmpegProcessWorker(QObject):
     started = Signal()
     stopped = Signal(int)
     error = Signal(str)
+    performance_warning = Signal(str)
 
     def __init__(self, cmd: list[str], kind: str = "ffmpeg") -> None:
         super().__init__()
@@ -47,6 +48,7 @@ class FFmpegProcessWorker(QObject):
         self._last_frame = -1
         self._last_frame_change_time = time.time()
         self._last_log_time = 0
+        self._low_speed_count = 0
 
     @Slot()
     def run(self) -> None:
@@ -125,6 +127,20 @@ class FFmpegProcessWorker(QObject):
                 self.kind, frame, fps, time_val, speed
             )
             self._last_log_time = now
+            
+            # Check for low performance (speed < 0.90x)
+            try:
+                speed_num = float(speed.replace("x", ""))
+                if speed_num < 0.90:
+                    self._low_speed_count += 1
+                    if self._low_speed_count >= 2: # At least 6 seconds of low performance
+                        msg = (f"Recording speed is low ({speed_num}x). "
+                               "Video may stutter. Use Hardware Encoding or Stream Copy.")
+                        self.performance_warning.emit(msg)
+                else:
+                    self._low_speed_count = 0
+            except (ValueError, TypeError):
+                pass
 
     @Slot()
     def stop(self) -> None:
@@ -150,6 +166,7 @@ class FFmpegProcessController(QObject):
     started = Signal()
     stopped = Signal(int)
     error = Signal(str)
+    performance_warning = Signal(str)
 
     def __init__(self, cmd: list[str], kind: str = "ffmpeg") -> None:
         super().__init__()
@@ -171,6 +188,7 @@ class FFmpegProcessController(QObject):
         self.worker.started.connect(self.started)
         self.worker.stopped.connect(self.stopped)
         self.worker.error.connect(self.error)
+        self.worker.performance_warning.connect(self.performance_warning)
 
         self.worker.stopped.connect(self.thread.quit)
         self.worker.stopped.connect(self.worker.deleteLater)

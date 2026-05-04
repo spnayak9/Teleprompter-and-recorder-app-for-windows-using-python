@@ -39,8 +39,17 @@ class AppSettings:
     fps: int = 30
     pixel_format: str = "yuv420p"
     input_format_kind: str = "pixel_format"
-    video_codec: str = "copy"
-    lossless: bool = True
+    video_codec: str = "copy"  # Backward compatibility
+    video_codec_mode: str = "copy"
+    video_encoder_type: str = "copy"  # copy | software | hardware
+    video_acceleration: str = "auto"  # auto | software | hardware
+    hardware_encoder: str = ""
+    software_encoder: str = "libx264"
+    quality_preset: str = "camera_copy"
+    hardware_preset: str = "balanced"
+    allow_high_risk_lossless: bool = False
+    auto_fallback_to_copy: bool = True
+    lossless: bool = False  # Backward compatibility
 
     # Recorder - Audio
     recording_sample_rate: int = 48000
@@ -82,6 +91,21 @@ class AppSettings:
     def from_dict(cls, values: dict[str, Any]) -> "AppSettings":
         defaults = cls()
         clean = {key: values.get(key, getattr(defaults, key)) for key in defaults.to_dict()}
+        
+        # Migration logic
+        if "video_codec" in values and "video_encoder_type" not in values:
+            old_codec = values["video_codec"]
+            if old_codec == "copy":
+                clean["video_encoder_type"] = "copy"
+                clean["video_codec_mode"] = "copy"
+            elif old_codec in {"libx264_hq", "libx264_lossless", "ffv1"}:
+                clean["video_encoder_type"] = "software"
+                clean["video_codec_mode"] = old_codec
+            elif old_codec in {"h264_nvenc", "h264_qsv", "h264_amf"}:
+                clean["video_encoder_type"] = "hardware"
+                clean["hardware_encoder"] = old_codec
+                clean["video_codec_mode"] = old_codec
+                
         return cls(**clean)
 
 

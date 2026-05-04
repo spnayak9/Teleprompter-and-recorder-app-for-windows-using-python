@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, Signal
 
-from teleprompter_app.config_manager import RecorderSettings
+from teleprompter_app.utils.config import AppSettings
 from teleprompter_app.recording.ffmpeg_commands import (
     build_audio_command,
     build_video_command,
@@ -69,6 +69,7 @@ class RecordingSessionController(QObject):
     started = Signal(object)
     stopped = Signal()
     error = Signal(str)
+    performance_warning = Signal(str)
 
     def __init__(self, ffmpeg_path: str = "ffmpeg") -> None:
         super().__init__()
@@ -81,7 +82,7 @@ class RecordingSessionController(QObject):
 
     def start(
         self,
-        settings: RecorderSettings,
+        settings: AppSettings,
         camera: CameraProfile | None,
         paths: RecordingSessionPaths,
     ) -> RecordingModeSpec:
@@ -119,6 +120,7 @@ class RecordingSessionController(QObject):
             self.video_process = FFmpegProcessController(video_cmd, kind="video")
             self.video_process.error.connect(self._on_process_error)
             self.video_process.stopped.connect(self._on_process_stopped)
+            self.video_process.performance_warning.connect(self.performance_warning)
             self._running_processes += 1
             self.video_process.start()
 
@@ -131,6 +133,7 @@ class RecordingSessionController(QObject):
             self.audio_process = FFmpegProcessController(audio_cmd, kind="audio")
             self.audio_process.error.connect(self._on_process_error)
             self.audio_process.stopped.connect(self._on_process_stopped)
+            self.audio_process.performance_warning.connect(self.performance_warning)
             self._running_processes += 1
             self.audio_process.start()
 

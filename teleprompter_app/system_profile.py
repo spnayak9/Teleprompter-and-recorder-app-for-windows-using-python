@@ -38,6 +38,9 @@ class SystemProfile:
     video_codecs: tuple[str, ...] = field(default_factory=tuple)
     audio_codecs: tuple[str, ...] = field(default_factory=tuple)
     containers: tuple[str, ...] = field(default_factory=tuple)
+    hardware_video_encoders: tuple[str, ...] = field(default_factory=tuple)
+    software_video_encoders: tuple[str, ...] = field(default_factory=tuple)
+    hardware_accels: tuple[str, ...] = field(default_factory=tuple)
 
     def camera_by_ffmpeg_name(self, ffmpeg_name: str) -> CameraProfile | None:
         for cam in self.cameras:
@@ -78,4 +81,7 @@ class SystemProfile:
             "video_codecs": list(self.video_codecs),
             "audio_codecs": list(self.audio_codecs),
             "containers": list(self.containers),
+            "hardware_video_encoders": list(self.hardware_video_encoders),
+            "software_video_encoders": list(self.software_video_encoders),
+            "hardware_accels": list(self.hardware_accels),
         }
