@@ -9,7 +9,7 @@ application wiring code (they are provided as reusable components).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, QSize, Signal, QSignalBlocker
 from PySide6.QtGui import QPixmap, QImage, QColor, QFont
 from PySide6.QtWidgets import (
     QLabel,
@@ -93,7 +93,7 @@ class PreviewOverlay(QWidget):
             self.preview_label.show()
             self.fps_label.show()
 
-    def set_paused(self, paused: bool, message: str = "") -> None:
+    def set_preview_paused(self, paused: bool, message: str = "") -> None:
         if message:
             self.paused_label.setText(message)
         
@@ -104,7 +104,7 @@ class PreviewOverlay(QWidget):
         else:
             self.paused_label.hide()
 
-    def clear_frame(self) -> None:
+    def clear_preview_frame(self) -> None:
         # Show black background or current background color
         self.set_background_color(self._background_color)
         self.fps_label.hide()
@@ -133,6 +133,7 @@ class MainToolbarControls(QWidget):
     mode_changed = Signal(str)
     background_changed = Signal(str)
     preview_resolution_changed = Signal(str)
+    preview_camera_changed = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -159,16 +160,21 @@ class MainToolbarControls(QWidget):
         self.preview_res_selector.addItem("720p", "720p")
         self.preview_res_selector.setCurrentText("360p")
 
+        self.preview_camera_selector = QComboBox()
+        self.preview_camera_selector.addItem("Same as Recording", "__same_as_recording__")
+
         self.start_btn = QPushButton("Start Recording")
         self.stop_btn = QPushButton("Stop Recording")
         self.stop_btn.setEnabled(False)
 
         layout.addWidget(QLabel("Mode:"))
         layout.addWidget(self.mode)
-        layout.addWidget(QLabel("Background:"))
+        layout.addWidget(QLabel("Bg:"))
         layout.addWidget(self.background_selector)
-        layout.addWidget(QLabel("Preview Res:"))
+        layout.addWidget(QLabel("Res:"))
         layout.addWidget(self.preview_res_selector)
+        layout.addWidget(QLabel("Cam:"))
+        layout.addWidget(self.preview_camera_selector)
         layout.addWidget(self.start_btn)
         layout.addWidget(self.stop_btn)
         
@@ -180,6 +186,19 @@ class MainToolbarControls(QWidget):
         )
         self.background_selector.currentIndexChanged.connect(lambda _idx: self.background_changed.emit(str(self.background_selector.currentData())))
         self.preview_res_selector.currentTextChanged.connect(self.preview_resolution_changed.emit)
+        self.preview_camera_selector.currentIndexChanged.connect(
+            lambda _idx: self.preview_camera_changed.emit(self.preview_camera_selector.currentData())
+        )
+
+    def populate_preview_cameras(self, cameras) -> None:
+        with QSignalBlocker(self.preview_camera_selector):
+            self.preview_camera_selector.clear()
+            self.preview_camera_selector.addItem("Same as Recording", "__same_as_recording__")
+            for cam in cameras:
+                self.preview_camera_selector.addItem(cam.name, cam.ffmpeg_name)
+
+    def current_preview_camera(self) -> str:
+        return self.preview_camera_selector.currentData() or "__same_as_recording__"
 
     def set_recording_state(self, is_recording: bool) -> None:
         self.start_btn.setEnabled(not is_recording)

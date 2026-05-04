@@ -54,6 +54,9 @@ class AppSettings:
     recording_format: str = "both"
     output_dir: str = ""
     container: str = "mkv"
+    recording_video_device: str = ""
+    preview_video_device: str = "__same_as_recording__"
+    preview_enabled_during_recording: bool = True
     
     # Recorder - Performance
     rtbufsize: str = "200M"

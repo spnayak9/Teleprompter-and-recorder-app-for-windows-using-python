@@ -15,6 +15,7 @@ from teleprompter_app.core.alignment import AlignmentEngine
 from teleprompter_app.audio.mic_manager import MicrophoneManager
 from teleprompter_app.preview import PreviewController
 from teleprompter_app.system_probe import probe_system
+from teleprompter_app.system_profile import CameraProfile
 from teleprompter_app.recording.session_controller import (
     RecordingSessionController,
     MODE_MAP,
@@ -88,6 +89,7 @@ class TeleprompterController(QObject):
         self._connect_signals()
         
         # Initial state
+        self.window.main_controls.populate_preview_cameras(self.system_profile.cameras)
         self._refresh_microphones()
         self.apply_settings(self.settings.to_dict())
 
@@ -103,6 +105,7 @@ class TeleprompterController(QObject):
         self.window.stop_recording_requested.connect(self.stop_recording)
         self.window.background_mode_changed.connect(self._on_background_mode_changed)
         self.window.preview_resolution_changed.connect(self._on_preview_resolution_changed)
+        self.window.preview_camera_changed.connect(self._on_preview_camera_changed)
         self.window.config_saved.connect(self._on_config_saved)
         
         # Preview -> UI
@@ -134,7 +137,7 @@ class TeleprompterController(QObject):
         use_camera = getattr(self.settings, "use_camera_background", False)
         
         if use_camera:
-            camera = self.system_profile.camera_by_ffmpeg_name(self.settings.video_device)
+            camera = self._resolve_preview_camera(self.settings)
             if camera:
                 mapping = {
                     "240p": (426, 240),
@@ -157,6 +160,9 @@ class TeleprompterController(QObject):
 
     def _on_preview_resolution_changed(self, res: str):
         self.apply_settings({"preview_resolution": res})
+
+    def _on_preview_camera_changed(self, cam_name: str):
+        self.apply_settings({"preview_video_device": cam_name})
 
     def _on_config_saved(self):
         # Reload settings after config dialog closes
@@ -254,27 +260,38 @@ class TeleprompterController(QObject):
         }
         return mapping.get(codec, "flac")
 
-    def _resolve_selected_camera(self, settings: AppSettings):
-        selected = (settings.video_device or "").strip()
+    def _resolve_recording_camera(self, settings: AppSettings):
+        selected = (settings.recording_video_device or settings.video_device or "").strip()
         if selected:
             camera = self.system_profile.camera_by_ffmpeg_name(selected)
             if camera:
                 return camera
-            # Fallback by display name
             for cam in self.system_profile.cameras:
                 if cam.name == selected or cam.ffmpeg_name == selected:
-                    return cam
-
-        # Second fallback: use opencv_index if set in settings (from preview)
-        preview_index = getattr(settings, "opencv_index", None)
-        if preview_index is not None:
-            for cam in self.system_profile.cameras:
-                if cam.opencv_index == preview_index:
                     return cam
 
         if len(self.system_profile.cameras) == 1:
             return self.system_profile.cameras[0]
         return None
+
+    def _resolve_preview_camera(self, settings: AppSettings):
+        selected = self.window.main_controls.current_preview_camera()
+        if selected == "__same_as_recording__":
+            selected = (settings.recording_video_device or settings.video_device or "").strip()
+
+        if selected:
+            camera = self.system_profile.camera_by_ffmpeg_name(selected)
+            if camera:
+                return camera
+            for cam in self.system_profile.cameras:
+                if cam.name == selected or cam.ffmpeg_name == selected:
+                    return cam
+        return None
+
+    def _same_camera(self, a: CameraProfile | None, b: CameraProfile | None) -> bool:
+        if a is None or b is None:
+            return False
+        return a.ffmpeg_name == b.ffmpeg_name or a.opencv_index == b.opencv_index
 
     def _cleanup_failed_recording_paths(self, paths):
         if not paths:
@@ -287,14 +304,14 @@ class TeleprompterController(QObject):
             except Exception:
                 logger.warning("Could not clean failed output: %s", path, exc_info=True)
 
-    def _pause_preview_for_recording(self) -> None:
+    def _pause_preview_for_recording(self, message: str = "") -> None:
         self._restart_preview_after_recording = False
         try:
             if self.preview_controller and self.preview_controller.is_running():
                 self._restart_preview_after_recording = True
                 self.preview_controller.stop(wait=True)
-            self.window.preview_overlay.set_paused(True, "Preview paused during video recording")
-            self.window.preview_overlay.clear_frame()
+            self.window.preview_overlay.set_preview_paused(True, message or "Preview paused")
+            self.window.preview_overlay.clear_preview_frame()
         except Exception:
             logger.exception("Could not pause preview before video recording")
 
@@ -348,17 +365,28 @@ class TeleprompterController(QObject):
             logger.info("Recording mode resolved before validation: mode=%r video=%s audio=%s srt=%s",
                         mode_key, mode_spec.video, mode_spec.audio, mode_spec.srt)
 
-            # 2. Resolve camera only if video is needed
-            camera = None
+            # 2. Resolve recording camera only if video is needed
+            recording_camera = None
             if mode_spec.video:
-                camera = self._resolve_selected_camera(self.settings)
-                if camera is None:
+                recording_camera = self._resolve_recording_camera(self.settings)
+                if recording_camera is None:
                     raise RuntimeError(
                         f"Video recording requested but no camera is selected. "
-                        f"device={self.settings.video_device!r}"
+                        f"device={self.settings.recording_video_device or self.settings.video_device!r}"
                     )
 
-            # 3. Validate audio only if audio is needed
+            # Resolve preview camera for conflict check
+            preview_camera = self._resolve_preview_camera(self.settings)
+
+            # 3. Handle Preview Conflict
+            if mode_spec.video:
+                if self._same_camera(recording_camera, preview_camera):
+                    self._pause_preview_for_recording("Preview paused: Recording uses the same camera")
+                else:
+                    # If preview is enabled, ensure it's running on its own camera
+                    self._update_preview_state()
+            
+            # 4. Validate audio only if audio is needed
             if mode_spec.audio and not self.settings.audio_device:
                 raise RuntimeError("Audio recording requested but no microphone is selected.")
 
@@ -385,31 +413,25 @@ class TeleprompterController(QObject):
             self.current_recording_paths = paths
             self.current_recording_mode = mode_spec
 
-            # 7. Pause preview if video recording is required
-            if mode_spec.video:
-                self._pause_preview_for_recording()
-
-            # 8. Ensure recognition for SRT
+            # 7. Ensure recognition for SRT
             if mode_spec.srt:
                 self._ensure_recognition_for_recording()
 
-            # 9. Start subtitle writer
+            # 8. Start subtitle writer
             if mode_spec.srt:
                 self.subtitle_generator = SubtitleGenerator(paths.subtitle_path)
                 self.subtitle_generator.start()
 
-            # 10. Start session
+            # 9. Start session
             self.recording_session.start(
                 settings=self.settings,
-                camera=camera,
+                camera=recording_camera,
                 paths=paths,
             )
 
             self._is_recording = True
-            self.recording_started_at = time.monotonic()
-            self.recording_timer.start(1000)
-            self.window.set_recording(True, f"Recording (Mode: {mode_key})")
-            self.window.set_recording_status(f"Recording session {paths.session_id} in progress...")
+            self.window.main_controls.set_recording_state(True)
+            self.window.set_status(f"Recording session {paths.session_id} in progress...")
 
         except Exception as e:
             logger.exception("Failed to start recording")
@@ -479,15 +501,20 @@ class TeleprompterController(QObject):
 
         self.window.set_recording(False)
         self.window.statusBar().showMessage("Recording stopped.")
-        self.window.preview_overlay.set_paused(False)
+        self.window.preview_overlay.set_preview_paused(False)
         
+        summary = "Recording complete:\n"
         if self.current_recording_paths:
             for path in [self.current_recording_paths.video_path, self.current_recording_paths.audio_path]:
                 if path.exists():
                     write_ffprobe_json(path)
+                    summary += f"- {path.name} ({path.stat().st_size / 1024 / 1024:.1f} MB)\n"
+            if self.current_recording_paths.subtitle_path.exists():
+                summary += f"- {self.current_recording_paths.subtitle_path.name}\n"
 
         if return_code is None or return_code == 0:
             self.window.set_status("Recording saved successfully.")
+            QMessageBox.information(self.window, "Recording Complete", summary)
         else:
             self.window.set_status(f"Recording finished with code {return_code}")
             
@@ -505,6 +532,8 @@ class TeleprompterController(QObject):
         self._preview_restart_pending = False
         if self.preview_controller and self.preview_controller.is_running():
             return
+        
+        # Resolve latest preview camera and restart
         self._update_preview_state()
 
     def _on_recording_error(self, message: str):

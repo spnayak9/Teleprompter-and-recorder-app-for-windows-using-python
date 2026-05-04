@@ -30,6 +30,7 @@ class MainWindow(QMainWindow):
     recording_mode_changed = Signal(str)
     background_mode_changed = Signal(str)
     preview_resolution_changed = Signal(str)
+    preview_camera_changed = Signal(str)
     select_recording_dir_requested = Signal()
     config_saved = Signal()
 
@@ -100,6 +101,7 @@ class MainWindow(QMainWindow):
         self.main_controls.mode_changed.connect(self.recording_mode_changed.emit)
         self.main_controls.background_changed.connect(self.background_mode_changed.emit)
         self.main_controls.preview_resolution_changed.connect(self.preview_resolution_changed.emit)
+        self.main_controls.preview_camera_changed.connect(self.preview_camera_changed.emit)
         
         self.settings_panel.select_recording_dir_requested.connect(self.select_recording_dir_requested.emit)
 

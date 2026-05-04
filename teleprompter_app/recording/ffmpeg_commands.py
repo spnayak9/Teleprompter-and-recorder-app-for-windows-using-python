@@ -115,6 +115,12 @@ def build_video_command(
             cmd.extend(["-crf", "18", "-pix_fmt", "yuv420p"])
     elif settings.video_codec == "libx264_hq":
         cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"])
+    elif settings.video_codec == "h264_nvenc":
+        # NVIDIA Hardware Acceleration
+        cmd.extend(["-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ull", "-rc", "constqp", "-qp", "18"])
+    elif settings.video_codec == "h264_qsv":
+        # Intel QuickSync Acceleration
+        cmd.extend(["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "18"])
     elif settings.video_codec == "ffv1":
         cmd.extend(["-c:v", "ffv1", "-level", "3"])
     else:

@@ -70,13 +70,15 @@ class ConfigDialog(QDialog):
     def _build_device_tab(self) -> None:
         form = QFormLayout(self.device_tab)
 
-        self.video_device = QComboBox()
+        self.recording_camera = QComboBox()
+        self.preview_camera = QComboBox()
         self.audio_device = QComboBox()
 
-        form.addRow("Camera", self.video_device)
+        form.addRow("Recording Camera", self.recording_camera)
+        form.addRow("Preview Camera", self.preview_camera)
         form.addRow("Microphone", self.audio_device)
 
-        self.video_device.currentIndexChanged.connect(self._on_camera_changed)
+        self.recording_camera.currentIndexChanged.connect(self._on_camera_changed)
 
     def _build_video_tab(self) -> None:
         form = QFormLayout(self.video_tab)
@@ -135,21 +137,25 @@ class ConfigDialog(QDialog):
         form.addRow("Audio Bitrate", self.audio_bitrate)
 
     def _populate_from_profile(self) -> None:
-        self.video_device.clear()
+        self.recording_camera.clear()
+        self.preview_camera.clear()
         self.audio_device.clear()
         self.video_codec.clear()
         self.container.clear()
 
+        self.preview_camera.addItem("Same as Recording Camera", "__same_as_recording__")
         for cam in self.system_profile.cameras:
-            self.video_device.addItem(cam.name, cam.ffmpeg_name)
+            self.recording_camera.addItem(cam.name, cam.ffmpeg_name)
+            self.preview_camera.addItem(cam.name, cam.ffmpeg_name)
 
         for mic in self.system_profile.audio_inputs:
             self.audio_device.addItem(mic.name, mic.ffmpeg_name)
 
         self.video_codec.clear()
-        self.video_codec.addItem("Copy camera stream (MJPEG)", "copy")
-        self.video_codec.addItem("H.264 high quality", "libx264")
-        self.video_codec.addItem("FFV1 lossless", "ffv1")
+        self.video_codec.addItem("Camera Stream Copy (recommended)", "copy")
+        self.video_codec.addItem("H.264 High Quality (smaller file)", "libx264_hq")
+        self.video_codec.addItem("H.264 Lossless (experimental/high CPU)", "libx264_lossless")
+        self.video_codec.addItem("FFV1 Lossless (archival/heavy)", "ffv1")
         self.video_codec.addItem("MJPEG", "mjpeg")
         
         # Add any other system discovered codecs if needed
@@ -165,7 +171,7 @@ class ConfigDialog(QDialog):
         self._on_camera_changed()
 
     def _selected_camera(self) -> CameraProfile | None:
-        ffmpeg_name = self.video_device.currentData()
+        ffmpeg_name = self.recording_camera.currentData()
         if not ffmpeg_name:
             return None
         return self.system_profile.camera_by_ffmpeg_name(ffmpeg_name)
@@ -270,7 +276,12 @@ class ConfigDialog(QDialog):
         return
 
     def _restore_settings(self) -> None:
-        self._set_combo_by_data(self.video_device, self.settings.video_device)
+        # Compatibility migration
+        rec_cam = self.settings.recording_video_device or self.settings.video_device
+        pre_cam = self.settings.preview_video_device or "__same_as_recording__"
+
+        self._set_combo_by_data(self.recording_camera, rec_cam)
+        self._set_combo_by_data(self.preview_camera, pre_cam)
         self._on_camera_changed()
 
         self._set_combo_by_data(self.resolution, self.settings.resolution)
@@ -329,7 +340,9 @@ class ConfigDialog(QDialog):
             fmt_kind = "pixel_format"
 
         updates = {
-            "video_device": self.video_device.currentData() or "",
+            "recording_video_device": self.recording_camera.currentData() or "",
+            "preview_video_device": self.preview_camera.currentData() or "__same_as_recording__",
+            "video_device": self.recording_camera.currentData() or "", # Compatibility
             "audio_device": self.audio_device.currentData() or "",
             "resolution": self.resolution.currentData() or "",
             "fps": fps_val,
