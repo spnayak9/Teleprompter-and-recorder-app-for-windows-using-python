@@ -1,24 +1,43 @@
-import cv2
+from __future__ import annotations
+
 import logging
+from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+import cv2
 
-def detect_cameras(max_index=5):
+log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class OpenCVCamera:
+    index: int
+
+
+def detect_opencv_cameras(max_indices: int = 5) -> tuple[OpenCVCamera, ...]:
     """
-    Primary camera discovery using OpenCV with DSHOW only.
-    DSHOW is typically faster for discovery on Windows.
-    """
-    cameras = []
+    Detect OpenCV camera indices once.
 
-    for i in range(max_index):
-        # Use DSHOW exclusively for discovery to avoid backend conflict churn
-        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-        if cap.isOpened():
-            cameras.append({
-                "name": f"Camera {i}",
-                "opencv_index": i
-            })
-            logger.info(f"Detected camera index {i} via DSHOW")
+    Rules:
+    - DSHOW only.
+    - Max index probing = 5.
+    - No MSMF fallback loop.
+    - Always release camera.
+    """
+    cameras: list[OpenCVCamera] = []
+
+    for index in range(max_indices):
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        try:
+            if not cap.isOpened():
+                continue
+
+            ok, _frame = cap.read()
+            if not ok:
+                continue
+
+            cameras.append(OpenCVCamera(index=index))
+            log.info("Detected camera index %s via DSHOW", index)
+        finally:
             cap.release()
 
-    return cameras
+    return tuple(cameras)

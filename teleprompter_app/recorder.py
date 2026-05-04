@@ -1,234 +1,202 @@
-"""FFmpeg-based recording engine.
-
-Provides a flexible `FFmpegRecorder` that can record video and/or audio from
-DirectShow devices on Windows using `ffmpeg` subprocesses. The implementation
-exposes a simple configuration dataclass and a start/stop API. It also
-monitors ffmpeg stderr to extract realtime FPS estimates.
-"""
 from __future__ import annotations
 
-import subprocess
-import threading
-import time
-import shutil
 import logging
-import re
-from dataclasses import dataclass
+import subprocess
 from pathlib import Path
-from typing import Optional, List, Dict
 
-logger = logging.getLogger(__name__)
+from PySide6.QtCore import QObject, QThread, Signal, Slot
 
+from teleprompter_app.config_manager import RecorderSettings
+from teleprompter_app.system_profile import CameraProfile
 
-@dataclass(slots=True)
-class RecorderConfig:
-    ffmpeg_path: str = "ffmpeg"
-    video_device: Optional[str] = None
-    audio_device: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    fps: Optional[float] = None
-    pixel_format: Optional[str] = None
-    video_codec: str = "ffv1"  # default lossless
-    audio_codec: str = "flac"
-    audio_sample_rate: Optional[int] = None
-    audio_channels: Optional[int] = None
-    output_container: str = "mkv"
-    rtbufsize: str = "200M"
-    thread_queue_size: int = 512
-    extra_ffmpeg_args: List[str] = None
+log = logging.getLogger(__name__)
 
 
-class FFmpegRecorder:
-    """Control an ffmpeg subprocess to capture audio/video streams.
+class FFmpegRecorderWorker(QObject):
+    started = Signal()
+    stopped = Signal(int)
+    error = Signal(str)
 
-    The recorder attempts to build a DirectShow input command and run ffmpeg
-    in a background thread. It monitors stderr to extract FPS estimates and
-    to surface ffmpeg logs to the application logger.
-    """
+    def __init__(
+        self,
+        ffmpeg_path: str,
+        settings: RecorderSettings,
+        camera: CameraProfile,
+        output_path: Path,
+    ) -> None:
+        super().__init__()
+        self.ffmpeg_path = ffmpeg_path
+        self.settings = settings
+        self.camera = camera
+        self.output_path = output_path
+        self.process: subprocess.Popen | None = None
+        self._stop_requested = False
 
-    def __init__(self, config: RecorderConfig, output_path: Path):
-        self.config = config
-        self.output_path = Path(output_path)
-        self._proc: Optional[subprocess.Popen] = None
-        self._stderr_thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
-        self._latest_fps: float = 0.0
-        self._lock = threading.Lock()
-
-    @property
-    def is_running(self) -> bool:
-        return self._proc is not None and self._proc.poll() is None
-
-    def _find_ffmpeg(self) -> str:
-        path = self.config.ffmpeg_path or "ffmpeg"
-        if shutil.which(path):
-            return path
-        # fallback: try plain ffmpeg
-        if shutil.which("ffmpeg"):
-            return "ffmpeg"
-        raise RuntimeError("ffmpeg executable not found; configure `ffmpeg_path` in RecorderConfig")
-
-    def _build_dshow_input(self) -> List[str]:
-        # Compose DirectShow input string(s).
-        video = self.config.video_device
-        audio = self.config.audio_device
-        # Support two input modes:
-        # - DirectShow devices (Windows): video=<name> or video=<name>:audio=<name>
-        # - Screen capture prefix 'screen:<title>' which uses gdigrab (Windows)
-        if video and video.startswith("screen:"):
-            # screen capture: 'screen:desktop' or 'screen:Window Title'
-            title = video.split(":", 1)[1] or "desktop"
-            args: List[str] = ["-f", "gdigrab"]
-            # thread queue size is not applicable to gdigrab but keep option ordering
-            args.extend(["-thread_queue_size", str(self.config.thread_queue_size)])
-            if self.config.fps:
-                args.extend(["-framerate", str(int(self.config.fps))])
-            # use title= for window capture, or desktop for full screen
-            if title.lower() == "desktop":
-                args.extend(["-i", "desktop"])
-            else:
-                args.extend(["-i", f"title={title}"])
-            # optionally attach audio input if requested (use default audio device name)
-            if audio:
-                # append audio input using dshow on Windows
-                args.extend(["-f", "dshow", "-i", f"audio={audio}"])
-            return args
-
-        # default: DirectShow device(s)
-        if video and audio:
-            input_spec = f"video={video}:audio={audio}"
-        elif video:
-            input_spec = f"video={video}"
-        elif audio:
-            input_spec = f"audio={audio}"
+    def _build_command(self) -> list[str]:
+        # Parse resolution
+        res = self.settings.resolution or "640x480"
+        if "x" in res:
+            width, height = res.split("x", 1)
         else:
-            raise RuntimeError("No video or audio device configured for recording")
+            width, height = "640", "480"
 
-        args: List[str] = ["-f", "dshow"]
-        # thread queue size before input helps prevent frame drops
-        args.extend(["-thread_queue_size", str(self.config.thread_queue_size)])
-        # optional framerate for capture devices
-        if self.config.fps and video:
-            args.extend(["-framerate", str(int(self.config.fps))])
-        args.extend(["-i", input_spec])
-        return args
+        cmd = [
+            self.ffmpeg_path,
+            "-hide_banner",
+            "-y",
+            "-f",
+            "dshow",
+            "-rtbufsize",
+            str(self.settings.rtbufsize),
+            "-thread_queue_size",
+            str(self.settings.thread_queue_size),
+            "-video_size",
+            f"{width}x{height}",
+            "-framerate",
+            str(self.settings.fps),
+            "-pixel_format",
+            self.settings.pixel_format,
+            "-i",
+            f"video={self.camera.ffmpeg_name}",
+        ]
 
-    def _build_output_args(self) -> List[str]:
-        args: List[str] = []
-        # choose codecs and container
-        vc = self.config.video_codec
-        ac = self.config.audio_codec
+        if self.settings.audio_device:
+            cmd.extend(
+                [
+                    "-f",
+                    "dshow",
+                    "-thread_queue_size",
+                    str(self.settings.thread_queue_size),
+                    "-i",
+                    f"audio={self.settings.audio_device}",
+                ]
+            )
 
-        if self.config.video_device and vc:
-            # allow copy for mjpeg if user selected an identity codec
-            if vc == "copy":
-                args.extend(["-c:v", "copy"])
-            else:
-                args.extend(["-c:v", vc])
+        cmd.extend(["-map", "0:v:0"])
 
-        if self.config.audio_device and ac:
-            if ac == "copy":
-                args.extend(["-c:a", "copy"])
-            else:
-                args.extend(["-c:a", ac])
+        if self.settings.audio_device:
+            cmd.extend(["-map", "1:a:0"])
 
-        if self.config.pixel_format:
-            args.extend(["-pix_fmt", self.config.pixel_format])
+        cmd.extend(["-c:v", self.settings.video_codec])
 
-        # tuning for robust capture
-        args.extend(["-rtbufsize", self.config.rtbufsize, "-fflags", "+genpts"])
+        if self.settings.lossless:
+            if self.settings.video_codec in {"ffv1"}:
+                cmd.extend(["-level", "3"])
+            elif self.settings.video_codec in {"libx264", "libx265"}:
+                cmd.extend(["-crf", "0", "-preset", "ultrafast"])
 
-        # allow extra user flags
-        if self.config.extra_ffmpeg_args:
-            args.extend(self.config.extra_ffmpeg_args)
+        if self.settings.audio_device:
+            cmd.extend(["-c:a", self.settings.audio_codec])
 
-        return args
+        if self.settings.extra_ffmpeg_args.strip():
+            cmd.extend(self.settings.extra_ffmpeg_args.strip().split())
 
-    def _build_command(self) -> List[str]:
-        ffmpeg = self._find_ffmpeg()
-        cmd: List[str] = [ffmpeg, "-y"]
-        # set indexing to use wallclock timestamps
-        cmd.extend(["-use_wallclock_as_timestamps", "1"])
-        # input building
-        cmd.extend(self._build_dshow_input())
+        cmd.append(str(self.output_path))
 
-        # output building
-        cmd.extend(self._build_output_args())
-
-        outfile = str(self.output_path)
-        # ensure container selection
-        cmd.append(outfile)
         return cmd
 
-    def start(self) -> None:
-        if self.is_running:
-            raise RuntimeError("Recorder is already running")
+    @Slot()
+    def run(self) -> None:
+        try:
+            cmd = self._build_command()
+            log.info("Starting FFmpeg recording: %s", " ".join(cmd))
 
-        cmd = self._build_command()
-        logger.info("Starting ffmpeg: %s", " ".join(cmd))
+            self.process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+            )
 
-        # spawn subprocess and monitor stderr
-        self._stop_event.clear()
-        self._proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL)
+            self.started.emit()
 
-        def _stderr_watcher(proc: subprocess.Popen):
-            assert proc.stderr is not None
-            for raw in iter(proc.stderr.readline, b""):
-                if self._stop_event.is_set():
+            assert self.process.stderr is not None
+            for line in self.process.stderr:
+                if line:
+                    log.debug("ffmpeg: %s", line.rstrip())
+
+                if self._stop_requested:
                     break
-                try:
-                    line = raw.decode("utf-8", errors="ignore").strip()
-                except Exception:
-                    continue
-                if not line:
-                    continue
-                logger.debug("ffmpeg: %s", line)
-                # parse fps from common ffmpeg progress lines
-                m = re_search_fps(line)
-                if m is not None:
-                    with self._lock:
-                        self._latest_fps = m
 
-            # ensure process has exited
-            try:
-                proc.wait(timeout=1)
-            except Exception:
-                pass
+            return_code = self.process.wait()
+            self.stopped.emit(return_code)
 
-        self._stderr_thread = threading.Thread(target=_stderr_watcher, args=(self._proc,), daemon=True)
-        self._stderr_thread.start()
+        except Exception as exc:
+            log.exception("Recording failed")
+            self.error.emit(str(exc))
 
-    def stop(self, timeout: float = 5.0) -> None:
-        if not self._proc:
+    @Slot()
+    def stop(self) -> None:
+        self._stop_requested = True
+
+        if self.process is None:
             return
-        self._stop_event.set()
+
+        if self.process.poll() is not None:
+            return
+
         try:
-            # try gentle termination
-            self._proc.terminate()
-            self._proc.wait(timeout=timeout)
+            if self.process.stdin:
+                self.process.stdin.write("q\n")
+                self.process.stdin.flush()
+            self.process.wait(timeout=8)
         except Exception:
+            self.process.terminate()
             try:
-                self._proc.kill()
+                self.process.wait(timeout=5)
             except Exception:
-                pass
-        finally:
-            self._proc = None
-
-    def get_fps(self) -> float:
-        with self._lock:
-            return float(self._latest_fps or 0.0)
+                self.process.kill()
 
 
-def re_search_fps(line: str) -> Optional[float]:
-    # common ffmpeg progress contains 'fps=123.4' or 'frame= 123 fps=123.4'
-    m = re.search(r"fps=\s*([0-9]+\.?[0-9]*)", line)
-    if m:
-        try:
-            return float(m.group(1))
-        except Exception:
-            return None
-    return None
+class RecordingController(QObject):
+    started = Signal()
+    stopped = Signal(int)
+    error = Signal(str)
 
+    def __init__(self, ffmpeg_path: str = "ffmpeg") -> None:
+        super().__init__()
+        self.ffmpeg_path = ffmpeg_path
+        self._thread: QThread | None = None
+        self._worker: FFmpegRecorderWorker | None = None
 
-__all__ = ["RecorderConfig", "FFmpegRecorder"]
+    def start(
+        self,
+        settings: RecorderSettings,
+        camera: CameraProfile,
+        output_path: Path,
+    ) -> None:
+        if self._thread is not None:
+            raise RuntimeError("Recording already running")
+
+        self._thread = QThread()
+        self._worker = FFmpegRecorderWorker(
+            ffmpeg_path=self.ffmpeg_path,
+            settings=settings,
+            camera=camera,
+            output_path=output_path,
+        )
+
+        self._worker.moveToThread(self._thread)
+
+        self._thread.started.connect(self._worker.run)
+        self._worker.started.connect(self.started)
+        self._worker.stopped.connect(self.stopped)
+        self._worker.error.connect(self.error)
+        self._worker.stopped.connect(self._thread.quit)
+        self._worker.stopped.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._cleanup)
+
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._worker:
+            self._worker.stop()
+
+    def _cleanup(self) -> None:
+        self._worker = None
+        self._thread = None

@@ -12,8 +12,8 @@ from teleprompter_app.ui.settings_panel import SettingsPanel
 from teleprompter_app.ui.teleprompter_view import TeleprompterView
 from teleprompter_app.ui_main import PreviewOverlay, MainToolbarControls
 from teleprompter_app.utils.config import AppSettings
+from teleprompter_app.system_profile import SystemProfile
 from teleprompter_app.ui_config import ConfigDialog
-from teleprompter_app.ffmpeg_probe import SystemProbe
 
 
 class MainWindow(QMainWindow):
@@ -33,7 +33,7 @@ class MainWindow(QMainWindow):
     select_recording_dir_requested = Signal()
     config_saved = Signal()
 
-    def __init__(self, settings: AppSettings, system_profile: SystemProbe) -> None:
+    def __init__(self, settings: AppSettings, system_profile: SystemProfile) -> None:
         super().__init__()
         self.settings = settings
         self.system_profile = system_profile

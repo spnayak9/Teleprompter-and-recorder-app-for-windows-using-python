@@ -29,7 +29,6 @@ from teleprompter_app.core.parser import InputType
 from teleprompter_app.recording.audio_config import RecordingFormat
 from teleprompter_app.recording.audio_config import SUPPORTED_SAMPLE_RATES, BitDepth, ChannelMode
 from teleprompter_app.utils.config import AppSettings
-from teleprompter_app.system_profile import load_profile_file
 from pathlib import Path
 
 
@@ -181,7 +180,7 @@ class SettingsPanel(QWidget):
         self.underline.setChecked(settings.underline)
         self.scroll_speed.setValue(settings.scroll_speed)
         self.model_path.setText(settings.vosk_model_path)
-        self.recording_dir.setText(settings.recording_project_dir)
+        self.recording_dir.setText(settings.output_dir)
         self._set_button_color(self.text_color_button, settings.text_color, "Text color")
         self._set_button_color(self.highlight_color_button, settings.highlight_color, "Highlight color")
 
@@ -335,7 +334,7 @@ class SettingsPanel(QWidget):
                 "input_mode": self.current_input_mode(),
                 "microphone_index": int(microphone_index) if microphone_index is not None else -1,
                 "vosk_model_path": self.model_path.text().strip(),
-                "recording_project_dir": self.recording_dir.text().strip(),
+                "output_dir": self.recording_dir.text().strip(),
             }
         )
 
