@@ -1,12 +1,41 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
+
+from teleprompter_app.config_manager import RecorderSettings
+from teleprompter_app.system_profile import CameraProfile
 
 from teleprompter_app.config_manager import RecorderSettings
 from teleprompter_app.system_profile import CameraProfile
 
 VIDEO_SUFFIXES = {".mkv", ".mp4", ".avi", ".mov", ".webm"}
 AUDIO_SUFFIXES = {".flac", ".mp3", ".wav", ".m4a", ".aac", ".opus"}
+
+
+def _metadata_args(kind: str, settings: RecorderSettings) -> list[str]:
+    created = datetime.now(timezone.utc).isoformat()
+
+    args = [
+        "-metadata",
+        "title=Teleprompter Recording",
+        "-metadata",
+        f"comment=Recorded by Teleprompter App ({kind})",
+        "-metadata",
+        f"creation_time={created}",
+        "-metadata",
+        "encoder=Teleprompter App + FFmpeg",
+    ]
+
+    device = getattr(settings, "video_device", "")
+    if device:
+        args.extend(["-metadata", f"camera={device}"])
+
+    mic = getattr(settings, "audio_device", "")
+    if mic:
+        args.extend(["-metadata", f"microphone={mic}"])
+
+    return args
 
 
 def _input_format_args(settings: RecorderSettings) -> list[str]:
@@ -79,6 +108,8 @@ def build_video_command(
     else:
         cmd.extend(["-c:v", settings.video_codec])
 
+    cmd.extend(_metadata_args("video", settings))
+
     cmd.append(str(output_path))
     return cmd
 
@@ -112,6 +143,14 @@ def build_audio_command(
 
     if getattr(settings, "audio_bitrate", "") and settings.audio_codec in {"libmp3lame", "aac", "libopus"}:
         cmd.extend(["-b:a", settings.audio_bitrate])
+
+    if getattr(settings, "recording_sample_rate", 0):
+        cmd.extend(["-ar", str(settings.recording_sample_rate)])
+
+    if getattr(settings, "recording_channels", 0):
+        cmd.extend(["-ac", str(settings.recording_channels)])
+
+    cmd.extend(_metadata_args("audio", settings))
 
     cmd.append(str(output_path))
     return cmd

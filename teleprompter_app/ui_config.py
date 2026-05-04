@@ -227,6 +227,9 @@ class ConfigDialog(QDialog):
                 label = str(int(fps)) if fps.is_integer() else f"{fps:g}"
                 self.fps.addItem(label, fps)
 
+            if self.fps.count() > 0:
+                self.fps.setCurrentIndex(0)
+
         self._on_fps_changed()
 
     def _on_fps_changed(self) -> None:
@@ -274,9 +277,13 @@ class ConfigDialog(QDialog):
         self._on_resolution_changed()
 
         try:
-            self._set_combo_by_data(self.fps, float(self.settings.fps))
+            fps_val = float(self.settings.fps)
+            if not self._set_combo_by_data(self.fps, fps_val):
+                if self.fps.count() > 0:
+                    self.fps.setCurrentIndex(0)
         except (ValueError, TypeError):
-            pass
+            if self.fps.count() > 0:
+                self.fps.setCurrentIndex(0)
         self._on_fps_changed()
 
         self._set_combo_by_data(self.video_codec, self.settings.video_codec)

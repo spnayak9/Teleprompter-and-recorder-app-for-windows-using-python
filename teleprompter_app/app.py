@@ -22,6 +22,7 @@ from teleprompter_app.recording.session_controller import (
 )
 from teleprompter_app.recording.session_paths import create_session_paths
 from teleprompter_app.recording.subtitle_generator import SubtitleGenerator
+from teleprompter_app.recording.media_probe import write_ffprobe_json
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ class TeleprompterController(QObject):
         self.current_recording_paths = None
         self.current_recording_mode = None
         self._is_recording = False
+        self._preview_restart_pending = False
         
         self._connect_signals()
         
@@ -291,7 +293,8 @@ class TeleprompterController(QObject):
             if self.preview_controller and self.preview_controller.is_running():
                 self._restart_preview_after_recording = True
                 self.preview_controller.stop(wait=True)
-            self.window.preview_overlay.set_paused(True)
+            self.window.preview_overlay.set_paused(True, "Preview paused during video recording")
+            self.window.preview_overlay.clear_frame()
         except Exception:
             logger.exception("Could not pause preview before video recording")
 
@@ -453,6 +456,11 @@ class TeleprompterController(QObject):
         self.window.statusBar().showMessage("Recording stopped.")
         self.window.preview_overlay.set_paused(False)
         
+        if self.current_recording_paths:
+            for path in [self.current_recording_paths.video_path, self.current_recording_paths.audio_path]:
+                if path.exists():
+                    write_ffprobe_json(path)
+
         if return_code is None or return_code == 0:
             self.window.set_status("Recording saved successfully.")
         else:
@@ -460,7 +468,19 @@ class TeleprompterController(QObject):
             
         # Restart preview conditionally with delay
         if getattr(self, "_restart_preview_after_recording", False):
-            QTimer.singleShot(750, self._update_preview_state)
+            self._schedule_preview_restart()
+
+    def _schedule_preview_restart(self) -> None:
+        if self._preview_restart_pending:
+            return
+        self._preview_restart_pending = True
+        QTimer.singleShot(750, self._restart_preview_after_recording_safe)
+
+    def _restart_preview_after_recording_safe(self) -> None:
+        self._preview_restart_pending = False
+        if self.preview_controller and self.preview_controller.is_running():
+            return
+        self._update_preview_state()
 
     def _on_recording_error(self, message: str):
         logger.error(f"Recording Error: {message}")

@@ -93,12 +93,21 @@ class PreviewOverlay(QWidget):
             self.preview_label.show()
             self.fps_label.show()
 
-    def set_paused(self, paused: bool) -> None:
+    def set_paused(self, paused: bool, message: str = "") -> None:
+        if message:
+            self.paused_label.setText(message)
+        
         if paused:
             self.paused_label.show()
+            self.fps_label.hide()
             self._update_paused_pos()
         else:
             self.paused_label.hide()
+
+    def clear_frame(self) -> None:
+        # Show black background or current background color
+        self.set_background_color(self._background_color)
+        self.fps_label.hide()
 
     def _update_paused_pos(self) -> None:
         self.paused_label.adjustSize()

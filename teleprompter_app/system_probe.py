@@ -4,6 +4,7 @@ import logging
 import re
 import subprocess
 
+from pathlib import Path
 from teleprompter_app.camera_mapper import detect_opencv_cameras
 from teleprompter_app.system_profile import (
     AudioProfile,
@@ -17,19 +18,32 @@ log = logging.getLogger(__name__)
 
 _DEVICE_RE = re.compile(r'\[(?:dshow|in#\d+).*?\]\s+"(.+?)"\s+\((video|audio)\)', re.IGNORECASE)
 
-_MODE_PIXEL_RE = re.compile(
-    r"pixel_format=(?P<fmt>[a-zA-Z0-9_]+).*?"
-    r"min s=(?P<w>\d+)x(?P<h>\d+).*?"
-    r"fps=(?P<fps>[0-9.]+)",
-    re.IGNORECASE,
-)
+FPS_RE = re.compile(r"fps=\s*(?P<fps>[0-9.]+)", re.IGNORECASE)
+SIZE_RE = re.compile(r"(?:min|max)?\s*s=(?P<w>\d+)x(?P<h>\d+)", re.IGNORECASE)
+PIXEL_RE = re.compile(r"pixel_format=(?P<fmt>[a-zA-Z0-9_]+)", re.IGNORECASE)
+VCODEC_RE = re.compile(r"vcodec=(?P<fmt>[a-zA-Z0-9_]+)", re.IGNORECASE)
+INTERVAL_RE = re.compile(r"(?:min|max)\s*interval=(?P<interval>\d+)", re.IGNORECASE)
 
-_MODE_VCODEC_RE = re.compile(
-    r"vcodec=(?P<fmt>[a-zA-Z0-9_]+).*?"
-    r"min s=(?P<w>\d+)x(?P<h>\d+).*?"
-    r"fps=(?P<fps>[0-9.]+)",
-    re.IGNORECASE,
-)
+
+def interval_100ns_to_fps(interval: int) -> float:
+    if interval <= 0:
+        return 0.0
+    return round(10_000_000 / interval, 3)
+
+
+def _safe_filename(name: str) -> str:
+    return "".join(c if c.isalnum() else "_" for c in name).strip("_")
+
+
+def _write_camera_probe_dump(camera_name: str, output: str) -> None:
+    try:
+        log_dir = Path.cwd() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / f"camera_modes_{_safe_filename(camera_name)}.txt"
+        path.write_text(output, encoding="utf-8", errors="replace")
+        log.info("Saved camera mode probe dump: %s", path)
+    except Exception:
+        log.exception("Could not save camera probe dump")
 
 
 def _run_ffmpeg(args: list[str], timeout: int = 20) -> str:
@@ -89,33 +103,57 @@ def _ffmpeg_list_camera_modes(ffmpeg_path: str, ffmpeg_device_name: str) -> tupl
         timeout=25,
     )
 
+    _write_camera_probe_dump(ffmpeg_device_name, output)
+
     modes: set[tuple[int, int, float, str, str]] = set()
 
     for line in output.splitlines():
-        match = _MODE_PIXEL_RE.search(line)
-        if match:
-            modes.add(
-                (
-                    int(match.group("w")),
-                    int(match.group("h")),
-                    float(match.group("fps")),
-                    match.group("fmt").strip(),
-                    "pixel_format",
-                )
-            )
+        line = line.strip()
+        if not line:
             continue
 
-        match = _MODE_VCODEC_RE.search(line)
-        if match:
-            modes.add(
-                (
-                    int(match.group("w")),
-                    int(match.group("h")),
-                    float(match.group("fps")),
-                    match.group("fmt").strip(),
-                    "vcodec",
-                )
-            )
+        pixel_match = PIXEL_RE.search(line)
+        vcodec_match = VCODEC_RE.search(line)
+        fmt = ""
+        kind = ""
+
+        if pixel_match:
+            fmt = pixel_match.group("fmt").strip()
+            kind = "pixel_format"
+        elif vcodec_match:
+            fmt = vcodec_match.group("fmt").strip()
+            kind = "vcodec"
+        else:
+            continue
+
+        sizes = SIZE_RE.findall(line)
+        if not sizes:
+            continue
+
+        fps_values = [float(m.group("fps")) for m in FPS_RE.finditer(line)]
+        intervals = [int(m.group("interval")) for m in INTERVAL_RE.finditer(line)]
+        for interval in intervals:
+            fps_values.append(interval_100ns_to_fps(interval))
+
+        for w_str, h_str in sizes:
+            width, height = int(w_str), int(h_str)
+            for fps in fps_values:
+                if fps > 0:
+                    modes.add((width, height, fps, fmt, kind))
+
+    # Phase 3: Secondary verification for known resolutions
+    # Common candidate FPS for high-res modes
+    candidates = [60.0, 30.0, 24.0, 15.0]
+    unique_resolutions = sorted({(m[0], m[1], m[3], m[4]) for m in modes})
+
+    for w, h, fmt, kind in unique_resolutions:
+        # Only verify high-res modes if they have very few FPS values
+        current_fps = {m[2] for m in modes if m[0] == w and m[1] == h}
+        if len(current_fps) < 2:
+            for cand_fps in candidates:
+                if cand_fps not in current_fps:
+                    if _verify_camera_mode(ffmpeg_path, ffmpeg_device_name, w, h, cand_fps, fmt, kind):
+                        modes.add((w, h, cand_fps, fmt, kind))
 
     return tuple(
         CameraMode(
@@ -131,6 +169,49 @@ def _ffmpeg_list_camera_modes(ffmpeg_path: str, ffmpeg_device_name: str) -> tupl
             reverse=True,
         )
     )
+
+
+def _verify_camera_mode(
+    ffmpeg_path: str,
+    device_name: str,
+    width: int,
+    height: int,
+    fps: float,
+    fmt: str,
+    kind: str,
+) -> bool:
+    cmd = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-f",
+        "dshow",
+        "-video_size",
+        f"{width}x{height}",
+        "-framerate",
+        str(fps),
+    ]
+    if kind == "vcodec":
+        cmd.extend(["-vcodec", fmt])
+    else:
+        cmd.extend(["-pixel_format", fmt])
+
+    cmd.extend(["-t", "0.5", "-i", f"video={device_name}", "-f", "null", "-"])
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=8,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
+        # If FFmpeg starts successfully (even if it stops due to timeout or short duration), it's often a valid mode
+        # We check if there are no major "Could not set" or "Unsupported" errors in the first few lines
+        if "Could not set" in proc.stderr or "Unsupported" in proc.stderr:
+            return False
+        return proc.returncode == 0 or "Stream #0:0" in proc.stderr
+    except Exception:
+        return False
 
 
 def _ffmpeg_codecs(ffmpeg_path: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
