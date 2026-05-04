@@ -177,5 +177,5 @@ class MainToolbarControls(QWidget):
         self.stop_btn.setEnabled(is_recording)
         self.mode.setEnabled(not is_recording)
 
-    def current_mode(self) -> str:
-        return self.mode.currentText()
+    def current_recording_mode(self) -> str:
+        return self.mode.currentData() or "srt only"

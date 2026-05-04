@@ -81,6 +81,7 @@ class TeleprompterController(QObject):
         self.subtitle_generator: SubtitleGenerator | None = None
         self.current_recording_paths = None
         self.current_recording_mode = None
+        self._is_recording = False
         
         self._connect_signals()
         
@@ -252,15 +253,23 @@ class TeleprompterController(QObject):
         return mapping.get(codec, "flac")
 
     def _resolve_selected_camera(self, settings: AppSettings):
-        device = (settings.video_device or "").strip()
-        if device:
-            camera = self.system_profile.camera_by_ffmpeg_name(device)
+        selected = (settings.video_device or "").strip()
+        if selected:
+            camera = self.system_profile.camera_by_ffmpeg_name(selected)
             if camera:
                 return camera
             # Fallback by display name
             for cam in self.system_profile.cameras:
-                if cam.name == device or cam.ffmpeg_name == device:
+                if cam.name == selected or cam.ffmpeg_name == selected:
                     return cam
+
+        # Second fallback: use opencv_index if set in settings (from preview)
+        preview_index = getattr(settings, "opencv_index", None)
+        if preview_index is not None:
+            for cam in self.system_profile.cameras:
+                if cam.opencv_index == preview_index:
+                    return cam
+
         if len(self.system_profile.cameras) == 1:
             return self.system_profile.cameras[0]
         return None
@@ -295,17 +304,25 @@ class TeleprompterController(QObject):
 
     @Slot()
     def start_recording(self):
-        if self.recording_started_at:
+        if self._is_recording:
             return
 
         paths = None
         try:
-            # 1. Resolve mode
-            raw_mode = self.window.main_controls.current_mode()
-            mode_key = normalize_recording_mode(raw_mode)
+            # 1. Force settings mode from live UI data
+            live_mode = self.window.main_controls.current_recording_mode()
+            self.settings = self.settings.updated({"recording_mode": live_mode})
+            
+            logger.info("Start recording requested. live_mode=%r settings.recording_mode=%r", 
+                        live_mode, self.settings.recording_mode)
+
+            mode_key = normalize_recording_mode(self.settings.recording_mode)
             mode_spec = MODE_MAP.get(mode_key)
             if mode_spec is None:
-                raise RuntimeError(f"Unsupported recording mode: {raw_mode!r}")
+                raise RuntimeError(f"Unsupported recording mode: {live_mode!r}")
+
+            logger.info("Recording mode resolved before validation: mode=%r video=%s audio=%s srt=%s",
+                        mode_key, mode_spec.video, mode_spec.audio, mode_spec.srt)
 
             # 2. Resolve camera only if video is needed
             camera = None
@@ -364,13 +381,17 @@ class TeleprompterController(QObject):
                 paths=paths,
             )
 
+            self._is_recording = True
             self.recording_started_at = time.monotonic()
             self.recording_timer.start(1000)
             self.window.set_recording(True, f"Recording (Mode: {mode_key})")
-            self.window.set_status(f"Recording session {paths.session_id} in progress...")
+            self.window.set_recording_status(f"Recording session {paths.session_id} in progress...")
 
         except Exception as e:
             logger.exception("Failed to start recording")
+            self._is_recording = False
+            self.window.set_recording(False)
+            
             if self.subtitle_generator:
                 try:
                     self.subtitle_generator.stop()
@@ -385,6 +406,8 @@ class TeleprompterController(QObject):
 
     @Slot()
     def stop_recording(self):
+        if not self._is_recording:
+            return
         try:
             if self.recording_session:
                 self.recording_session.stop()
@@ -400,8 +423,12 @@ class TeleprompterController(QObject):
                 self._recognition_started_by_recording = False
 
             self.recording_timer.stop()
+            self._is_recording = False
+            self.window.set_recording(False)
         except Exception as e:
             logger.exception("Failed to stop recording")
+            self._is_recording = False
+            self.window.set_recording(False)
             QMessageBox.critical(self.window, "Recording Error", str(e))
 
     def _on_recording_started(self):
@@ -410,20 +437,29 @@ class TeleprompterController(QObject):
         self.window.set_recording(True, "Recording...")
         self.window.set_status("Recording in progress...")
 
-    def _on_recording_stopped(self, return_code: int):
+    def _on_recording_stopped(self, return_code: int | None = None):
+        logger.info("Recording stopped. return_code=%r", return_code)
+        self._is_recording = False
         self.recording_started_at = None
         self.recording_timer.stop()
+        
+        if self.subtitle_generator:
+            try:
+                self.subtitle_generator.stop()
+            finally:
+                self.subtitle_generator = None
+
         self.window.set_recording(False)
         self.window.statusBar().showMessage("Recording stopped.")
         self.window.preview_overlay.set_paused(False)
         
-        if return_code == 0:
+        if return_code is None or return_code == 0:
             self.window.set_status("Recording saved successfully.")
         else:
             self.window.set_status(f"Recording finished with code {return_code}")
             
         # Restart preview conditionally with delay
-        if self._restart_preview_after_recording:
+        if getattr(self, "_restart_preview_after_recording", False):
             QTimer.singleShot(750, self._update_preview_state)
 
     def _on_recording_error(self, message: str):

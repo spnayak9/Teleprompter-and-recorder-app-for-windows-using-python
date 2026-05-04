@@ -75,9 +75,9 @@ class RecordingSessionController(QObject):
         self.ffmpeg_path = ffmpeg_path
         self.video_process: FFmpegProcessController | None = None
         self.audio_process: FFmpegProcessController | None = None
-        self.paths: RecordingSessionPaths | None = None
         self.mode_spec: RecordingModeSpec | None = None
         self._running_processes = 0
+        self._stopped_emitted = False
 
     def start(
         self,
@@ -106,6 +106,7 @@ class RecordingSessionController(QObject):
         self.paths = paths
         self.mode_spec = spec
         self._running_processes = 0
+        self._stopped_emitted = False
 
         if spec.video:
             assert camera is not None
@@ -147,15 +148,21 @@ class RecordingSessionController(QObject):
         self.video_process = None
         self.audio_process = None
         self._running_processes = 0
-        self.stopped.emit()
+        self._emit_stopped_once()
 
     def _on_process_stopped(self, _code: int) -> None:
-        self._running_processes -= 1
+        self._running_processes = max(0, self._running_processes - 1)
 
         if self._running_processes <= 0:
-            self.video_process = None
-            self.audio_process = None
-            self.stopped.emit()
+            self._emit_stopped_once()
+
+    def _emit_stopped_once(self) -> None:
+        if self._stopped_emitted:
+            return
+        self._stopped_emitted = True
+        self.video_process = None
+        self.audio_process = None
+        self.stopped.emit()
 
     def _on_process_error(self, message: str) -> None:
         logger.error("Recording process failed: %s", message)

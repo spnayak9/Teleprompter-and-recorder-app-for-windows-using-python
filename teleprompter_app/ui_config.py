@@ -91,7 +91,7 @@ class ConfigDialog(QDialog):
         form.addRow("FPS", self.fps)
         form.addRow("Pixel format", self.pixel_format)
         form.addRow("Video codec", self.video_codec)
-        form.addRow("Lossless", self.lossless)
+        form.addRow("Lossless (h.264/ffv1 only)", self.lossless)
 
         self.resolution.currentIndexChanged.connect(self._on_resolution_changed)
         self.fps.currentIndexChanged.connect(self._on_fps_changed)
@@ -105,9 +105,34 @@ class ConfigDialog(QDialog):
         browse = QPushButton("Browse")
         browse.clicked.connect(self._choose_output_dir)
 
+        self.recording_sample_rate = QComboBox()
+        self.recording_channels = QComboBox()
+        self.audio_codec = QComboBox()
+        self.audio_bitrate = QComboBox()
+
+        for sr in [16000, 32000, 44100, 48000]:
+            self.recording_sample_rate.addItem(f"{sr} Hz", sr)
+        
+        self.recording_channels.addItem("Mono", 1)
+        self.recording_channels.addItem("Stereo", 2)
+
+        self.audio_codec.addItem("FLAC lossless", "flac")
+        self.audio_codec.addItem("MP3", "libmp3lame")
+        self.audio_codec.addItem("WAV PCM 16-bit", "pcm_s16le")
+        self.audio_codec.addItem("AAC", "aac")
+        self.audio_codec.addItem("Opus", "libopus")
+
+        self.audio_bitrate.addItem("Lossless / Auto", "")
+        for br in ["128k", "192k", "256k", "320k"]:
+            self.audio_bitrate.addItem(br, br)
+
         form.addRow("Container", self.container)
         form.addRow("Output directory", self.output_dir)
         form.addRow("", browse)
+        form.addRow("Audio Sample Rate", self.recording_sample_rate)
+        form.addRow("Audio Channels", self.recording_channels)
+        form.addRow("Audio Codec", self.audio_codec)
+        form.addRow("Audio Bitrate", self.audio_bitrate)
 
     def _populate_from_profile(self) -> None:
         self.video_device.clear()
@@ -121,8 +146,16 @@ class ConfigDialog(QDialog):
         for mic in self.system_profile.audio_inputs:
             self.audio_device.addItem(mic.name, mic.ffmpeg_name)
 
-        for codec in self.system_profile.video_codecs:
-            self.video_codec.addItem(codec, codec)
+        self.video_codec.clear()
+        self.video_codec.addItem("Copy camera stream (MJPEG)", "copy")
+        self.video_codec.addItem("H.264 high quality", "libx264")
+        self.video_codec.addItem("FFV1 lossless", "ffv1")
+        self.video_codec.addItem("MJPEG", "mjpeg")
+        
+        # Add any other system discovered codecs if needed
+        # for codec in self.system_profile.video_codecs:
+        #    if codec not in ["copy", "libx264", "ffv1", "mjpeg"]:
+        #        self.video_codec.addItem(codec, codec)
 
         for muxer in self.system_profile.containers:
             self.container.addItem(muxer, muxer)
@@ -246,10 +279,14 @@ class ConfigDialog(QDialog):
             pass
         self._on_fps_changed()
 
-        self._set_combo_by_data(self.pixel_format, self.settings.pixel_format)
         self._set_combo_by_data(self.video_codec, self.settings.video_codec)
         self._set_combo_by_data(self.audio_device, self.settings.audio_device)
         self._set_combo_by_data(self.container, self.settings.container)
+        
+        self._set_combo_by_data(self.recording_sample_rate, self.settings.recording_sample_rate)
+        self._set_combo_by_data(self.recording_channels, self.settings.recording_channels)
+        self._set_combo_by_data(self.audio_codec, self.settings.audio_codec)
+        self._set_combo_by_data(self.audio_bitrate, self.settings.audio_bitrate)
 
         self.output_dir.setText(self.settings.output_dir)
 
@@ -295,6 +332,10 @@ class ConfigDialog(QDialog):
             "lossless": self.lossless.isChecked(),
             "container": self.container.currentData() or "",
             "output_dir": self.output_dir.text().strip(),
+            "recording_sample_rate": int(self.recording_sample_rate.currentData() or 48000),
+            "recording_channels": int(self.recording_channels.currentData() or 1),
+            "audio_codec": self.audio_codec.currentData() or "flac",
+            "audio_bitrate": self.audio_bitrate.currentData() or "",
         }
 
         settings = current.updated(updates)

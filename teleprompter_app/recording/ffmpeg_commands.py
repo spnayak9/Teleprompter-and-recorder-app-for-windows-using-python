@@ -63,15 +63,21 @@ def build_video_command(
             "-map",
             "0:v:0",
             "-an",
-            "-c:v",
-            settings.video_codec,
         ]
     )
 
-    if settings.video_codec in {"libx264", "libx265"} and settings.lossless:
-        cmd.extend(["-crf", "0", "-preset", "ultrafast"])
-    elif settings.video_codec == "ffv1" and settings.lossless:
-        cmd.extend(["-level", "3"])
+    if settings.video_codec == "copy":
+        cmd.extend(["-c:v", "copy"])
+    elif settings.video_codec == "libx264":
+        cmd.extend(["-c:v", "libx264", "-preset", "veryfast"])
+        if settings.lossless:
+            cmd.extend(["-crf", "0"])
+        else:
+            cmd.extend(["-crf", "18", "-pix_fmt", "yuv420p"])
+    elif settings.video_codec == "ffv1":
+        cmd.extend(["-c:v", "ffv1", "-level", "3"])
+    else:
+        cmd.extend(["-c:v", settings.video_codec])
 
     cmd.append(str(output_path))
     return cmd
@@ -102,7 +108,10 @@ def build_audio_command(
         "-vn",
         "-c:a",
         settings.audio_codec,
-        str(output_path),
     ]
 
+    if getattr(settings, "audio_bitrate", "") and settings.audio_codec in {"libmp3lame", "aac", "libopus"}:
+        cmd.extend(["-b:a", settings.audio_bitrate])
+
+    cmd.append(str(output_path))
     return cmd

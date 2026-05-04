@@ -230,6 +230,17 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
         containers=containers,
     )
 
+    for cam in profile.cameras:
+        log.info("Camera modes for %s:", cam.ffmpeg_name)
+        for mode in cam.formats:
+            log.info(
+                "  %s fps=%s format=%s kind=%s",
+                mode.resolution,
+                mode.fps,
+                mode.format_name,
+                mode.format_kind,
+            )
+
     log.info(
         "System profile ready: %s cameras, %s audio inputs",
         len(profile.cameras),

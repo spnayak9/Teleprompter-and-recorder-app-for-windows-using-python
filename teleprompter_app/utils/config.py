@@ -39,7 +39,7 @@ class AppSettings:
     fps: int = 30
     pixel_format: str = "yuv420p"
     input_format_kind: str = "pixel_format"
-    video_codec: str = "ffv1"
+    video_codec: str = "copy"
     lossless: bool = True
 
     # Recorder - Audio
@@ -47,6 +47,7 @@ class AppSettings:
     recording_bit_depth: int = 16
     recording_channels: int = 1
     audio_codec: str = "flac"
+    audio_bitrate: str = ""
 
     # Recorder - Global
     recording_mode: str = "audio + video + srt"
