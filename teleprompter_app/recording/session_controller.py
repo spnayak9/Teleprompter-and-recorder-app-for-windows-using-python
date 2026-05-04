@@ -116,7 +116,7 @@ class RecordingSessionController(QObject):
                 camera,
                 paths.video_path,
             )
-            self.video_process = FFmpegProcessController(video_cmd)
+            self.video_process = FFmpegProcessController(video_cmd, kind="video")
             self.video_process.error.connect(self._on_process_error)
             self.video_process.stopped.connect(self._on_process_stopped)
             self._running_processes += 1
@@ -128,7 +128,7 @@ class RecordingSessionController(QObject):
                 settings,
                 paths.audio_path,
             )
-            self.audio_process = FFmpegProcessController(audio_cmd)
+            self.audio_process = FFmpegProcessController(audio_cmd, kind="audio")
             self.audio_process.error.connect(self._on_process_error)
             self.audio_process.stopped.connect(self._on_process_stopped)
             self._running_processes += 1

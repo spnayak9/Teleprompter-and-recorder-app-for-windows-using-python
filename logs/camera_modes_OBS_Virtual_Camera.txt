@@ -1,7 +1,7 @@
 
-[in#0 @ 0000021496818fc0] DirectShow video device options (from video devices)
-[in#0 @ 0000021496818fc0]  Pin "Video Output" (alternative pin name "Output Pin")
-[in#0 @ 0000021496818fc0]   pixel_format=nv12  min s=1920x1080 fps=30 max s=1920x1080 fps=30
-[in#0 @ 0000021496818fc0]   pixel_format=yuv420p  min s=1920x1080 fps=30 max s=1920x1080 fps=30
-[in#0 @ 0000021496818fc0]   pixel_format=yuyv422  min s=1920x1080 fps=30 max s=1920x1080 fps=30
+[in#0 @ 0000017f85968fc0] DirectShow video device options (from video devices)
+[in#0 @ 0000017f85968fc0]  Pin "Video Output" (alternative pin name "Output Pin")
+[in#0 @ 0000017f85968fc0]   pixel_format=nv12  min s=1920x1080 fps=30 max s=1920x1080 fps=30
+[in#0 @ 0000017f85968fc0]   pixel_format=yuv420p  min s=1920x1080 fps=30 max s=1920x1080 fps=30
+[in#0 @ 0000017f85968fc0]   pixel_format=yuyv422  min s=1920x1080 fps=30 max s=1920x1080 fps=30
 Error opening input file video=OBS Virtual Camera.

@@ -316,6 +316,27 @@ class TeleprompterController(QObject):
             live_mode = self.window.main_controls.current_recording_mode()
             self.settings = self.settings.updated({"recording_mode": live_mode})
             
+            # Phase 3: Safe mode warning for 4K lossless
+            width = 0
+            try:
+                res = self.settings.resolution or "0x0"
+                width = int(res.split("x")[0])
+            except Exception:
+                pass
+
+            if width >= 3840 and self.settings.fps >= 30 and self.settings.video_codec in {"libx264", "libx264_lossless", "ffv1"}:
+                reply = QMessageBox.warning(
+                    self.window,
+                    "High Load Warning",
+                    "4K30 lossless recording is extremely heavy and may freeze.\n\n"
+                    "It is recommended to use 'copy' (Camera Stream Copy) instead.\n\n"
+                    "Continue anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    return
+
             logger.info("Start recording requested. live_mode=%r settings.recording_mode=%r", 
                         live_mode, self.settings.recording_mode)
 
@@ -441,6 +462,10 @@ class TeleprompterController(QObject):
         self.window.set_status("Recording in progress...")
 
     def _on_recording_stopped(self, return_code: int | None = None):
+        if not self._is_recording:
+            logger.debug("Ignoring duplicate recording stopped event")
+            return
+
         logger.info("Recording stopped. return_code=%r", return_code)
         self._is_recording = False
         self.recording_started_at = None

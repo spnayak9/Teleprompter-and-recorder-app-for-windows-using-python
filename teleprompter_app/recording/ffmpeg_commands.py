@@ -63,20 +63,30 @@ def build_video_command(
 
     res = settings.resolution or "1280x720"
     if "x" in res:
-        width, height = res.split("x", 1)
+        width_str, height_str = res.split("x", 1)
+        width, height = int(width_str), int(height_str)
     else:
-        width, height = "1280", "720"
+        width, height = 1280, 720
 
+    # Phase 5: High-res buffer scaling
+    rtbuf = "1G" if width >= 3840 else str(settings.rtbufsize)
+    queue = 2048 if width >= 3840 else int(settings.thread_queue_size)
+
+    # Phase 4: Timestamp and stability flags
     cmd = [
         ffmpeg_path,
         "-hide_banner",
         "-y",
+        "-fflags",
+        "+genpts",
+        "-use_wallclock_as_timestamps",
+        "1",
         "-f",
         "dshow",
         "-rtbufsize",
-        str(settings.rtbufsize),
+        rtbuf,
         "-thread_queue_size",
-        str(settings.thread_queue_size),
+        str(queue),
         "-video_size",
         f"{width}x{height}",
         "-framerate",
@@ -97,16 +107,21 @@ def build_video_command(
 
     if settings.video_codec == "copy":
         cmd.extend(["-c:v", "copy"])
-    elif settings.video_codec == "libx264":
-        cmd.extend(["-c:v", "libx264", "-preset", "veryfast"])
-        if settings.lossless:
+    elif settings.video_codec in {"libx264", "libx264_lossless"}:
+        cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"])
+        if settings.lossless or settings.video_codec == "libx264_lossless":
             cmd.extend(["-crf", "0"])
         else:
             cmd.extend(["-crf", "18", "-pix_fmt", "yuv420p"])
+    elif settings.video_codec == "libx264_hq":
+        cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"])
     elif settings.video_codec == "ffv1":
         cmd.extend(["-c:v", "ffv1", "-level", "3"])
     else:
         cmd.extend(["-c:v", settings.video_codec])
+
+    # Phase 4: Output sync
+    cmd.extend(["-fps_mode", "passthrough"])
 
     cmd.extend(_metadata_args("video", settings))
 
