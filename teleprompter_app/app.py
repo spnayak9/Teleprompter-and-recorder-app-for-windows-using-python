@@ -109,6 +109,8 @@ class TeleprompterController(QObject):
         self.window.preview_resolution_changed.connect(self._on_preview_resolution_changed)
         self.window.preview_camera_changed.connect(self._on_preview_camera_changed)
         self.window.config_saved.connect(self._on_config_saved)
+        # Config dialog → Controller: keep system_profile in sync after verification
+        self.window.profile_updated.connect(self._on_profile_updated)
         
         # Preview -> UI
         self.preview_controller.frame_ready.connect(self.window.preview_overlay.set_frame)
@@ -195,6 +197,18 @@ class TeleprompterController(QObject):
         # Reload settings after config dialog closes
         self.settings = self.settings_manager.load()
         self.apply_settings({})
+
+    def _on_profile_updated(self, new_profile) -> None:
+        """
+        Called whenever the config dialog verifies encoders.
+        Replaces the controller’s system_profile with the freshly-verified
+        version so start_recording() never sees stale UNSUPPORTED states.
+        """
+        self.system_profile = new_profile
+        logger.info(
+            "system_profile updated from config dialog — hw encoders: %s",
+            [(e.name, e.state.value) for e in new_profile.hardware_encoders()],
+        )
 
     def _refresh_microphones(self):
         devices = self.mic_manager.list_input_devices()
@@ -393,27 +407,63 @@ class TeleprompterController(QObject):
                     hw_enc = self.settings.hardware_encoder
                     if not hw_enc or hw_enc.lower() == "none":
                         raise RuntimeError("Hardware encoding selected but no hardware encoder is configured.")
-                    
-                    enc_prof = self.system_profile.encoder_by_name(hw_enc)
-                    from teleprompter_app.system_profile import EncoderState
-                    if not enc_prof or enc_prof.state == EncoderState.UNSUPPORTED:
-                        raise RuntimeError(f"Hardware encoding requested but encoder '{hw_enc}' is not supported.")
 
-                    if enc_prof.state != EncoderState.AVAILABLE:
-                        from teleprompter_app.recording.encoder_probe import verify_encoder_usable
+                    from teleprompter_app.system_profile import EncoderState
+                    from teleprompter_app.recording.encoder_probe import verify_encoder_usable
+
+                    enc_prof = self.system_profile.encoder_by_name(hw_enc)
+                    if enc_prof is None:
+                        raise RuntimeError(
+                            f"Hardware encoder '{hw_enc}' is not known to this system. "
+                            "Open Configure and re-select a hardware encoder."
+                        )
+
+                    # --------------------------------------------------------
+                    # State machine:
+                    #   AVAILABLE   → proceed immediately (no re-verify)
+                    #   UNSUPPORTED → attempt lazy verification now
+                    #   UNAVAILABLE → fail fast (already failed verification)
+                    # --------------------------------------------------------
+                    if enc_prof.state is EncoderState.UNAVAILABLE:
+                        raise RuntimeError(
+                            f"Hardware encoder '{hw_enc}' failed verification: {enc_prof.failure_reason}"
+                        )
+
+                    if enc_prof.state is EncoderState.UNSUPPORTED:
+                        logger.info(
+                            "Encoder '%s' is UNSUPPORTED — attempting lazy verification before recording.",
+                            hw_enc,
+                        )
                         from PySide6.QtWidgets import QApplication
                         from PySide6.QtCore import Qt
                         QApplication.setOverrideCursor(Qt.WaitCursor)
                         try:
                             usable, reason = verify_encoder_usable("ffmpeg", hw_enc)
-                            if not usable:
-                                self.system_profile = self.system_profile.with_encoder_verification(hw_enc, EncoderState.UNAVAILABLE, reason)
+                            if usable:
+                                self.system_profile = self.system_profile.with_encoder_verification(
+                                    hw_enc, EncoderState.AVAILABLE, ""
+                                )
                                 self.system_profile.save_encoder_cache()
-                                raise RuntimeError(f"Hardware encoder {hw_enc} failed to verify:\n{reason}")
-                            self.system_profile = self.system_profile.with_encoder_verification(hw_enc, EncoderState.AVAILABLE, "")
-                            self.system_profile.save_encoder_cache()
+                                enc_prof = self.system_profile.encoder_by_name(hw_enc)
+                            else:
+                                self.system_profile = self.system_profile.with_encoder_verification(
+                                    hw_enc, EncoderState.UNAVAILABLE, reason
+                                )
+                                self.system_profile.save_encoder_cache()
+                                raise RuntimeError(
+                                    f"Hardware encoder '{hw_enc}' failed verification:\n{reason}"
+                                )
                         finally:
                             QApplication.restoreOverrideCursor()
+
+                    # At this point enc_prof.state must be AVAILABLE
+                    if enc_prof is None or enc_prof.state is not EncoderState.AVAILABLE:
+                        raise RuntimeError(
+                            f"Hardware encoder '{hw_enc}' is not verified usable. "
+                            "Open Configure to verify it first."
+                        )
+
+                    logger.info("Hardware encoder '%s' is AVAILABLE — proceeding.", hw_enc)
 
             # Resolve preview camera for conflict check
             preview_camera = self._resolve_preview_camera(self.settings)

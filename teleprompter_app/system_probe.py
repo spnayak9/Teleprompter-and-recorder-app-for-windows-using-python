@@ -310,8 +310,9 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
     containers = _ffmpeg_muxers(ffmpeg_path)
     hw_accels = _ffmpeg_hwaccels(ffmpeg_path)
 
-    # Structured encoder detection via ffmpeg -encoders (correct method)
-    encoder_dicts = probe_detected_encoders(ffmpeg_path)
+    # Structured encoder detection via ffmpeg -encoders (correct method).
+    # Pass hw_accels so discovery is gated: no NVENC on AMD, no QSV without MFX.
+    encoder_dicts = probe_detected_encoders(ffmpeg_path, hardware_accels=set(hw_accels))
     
     import json
     from teleprompter_app.system_profile import EncoderState

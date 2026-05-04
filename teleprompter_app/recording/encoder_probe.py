@@ -119,9 +119,19 @@ def verify_encoder_usable(ffmpeg_path: str, encoder_name: str, timeout: int = 15
 # High-level probe
 # ---------------------------------------------------------------------------
 
-def probe_detected_encoders(ffmpeg_path: str = "ffmpeg") -> list[dict]:
+def probe_detected_encoders(
+    ffmpeg_path: str = "ffmpeg",
+    hardware_accels: "set[str] | None" = None,
+) -> list[dict]:
     """
     Detect hardware and software encoders available in this FFmpeg build.
+
+    Hardware encoders are gated by ``hardware_accels``:
+    - ``_amf``   only added when ``"amf"``  is in hardware_accels
+    - ``_nvenc`` only added when ``"cuda"`` is in hardware_accels
+    - ``_qsv``   only added when ``"qsv"``  is in hardware_accels
+
+    If ``hardware_accels`` is None or empty the gate is skipped (safe fallback).
     Hardware encoders are returned with state='unsupported' (lazy verify).
     Software encoders are returned with state='available'.
 
@@ -130,34 +140,70 @@ def probe_detected_encoders(ffmpeg_path: str = "ffmpeg") -> list[dict]:
     available = list_available_encoder_names(ffmpeg_path)
     results: list[dict] = []
 
+    # Normalise: lowercase, empty set means "no gating"
+    accels: set[str] = {a.lower() for a in (hardware_accels or set())}
+    gate_active = bool(accels)
+
+    amf_allowed   = (not gate_active) or ("amf"  in accels)
+    nvenc_allowed = (not gate_active) or ("cuda" in accels)
+    qsv_allowed   = (not gate_active) or ("qsv"  in accels)
+
+    if gate_active:
+        logger.info(
+            "Encoder discovery gating active — amf=%s nvenc=%s qsv=%s",
+            amf_allowed, nvenc_allowed, qsv_allowed,
+        )
+    else:
+        logger.info("Encoder discovery gating inactive (no hw_accels provided)")
+
     from teleprompter_app.system_profile import EncoderState
 
-    for name in available:
-        if name.endswith("_nvenc"):
+    for name in sorted(available):          # sorted for deterministic ordering
+        if name.endswith("_amf"):
+            if not amf_allowed:
+                logger.debug("Skipping %s — 'amf' not in hardware_accels", name)
+                continue
             results.append({
-                "name": name, "label": f"NVIDIA {name.upper().replace('_NVENC', '')} NVENC",
-                "kind": "hardware", "vendor": "nvidia", "codec_family": name.split("_")[0],
+                "name": name,
+                "label": f"AMD {name.upper().replace('_AMF', '')} AMF",
+                "kind": "hardware", "vendor": "amd",
+                "codec_family": name.rsplit("_", 1)[0],
+                "lossless_capable": False, "realtime_4k_recommended": True,
+                "state": EncoderState.UNSUPPORTED.value, "failure_reason": "",
+            })
+            logger.info("Hardware encoder detected (unverified): %s", name)
+
+        elif name.endswith("_nvenc"):
+            if not nvenc_allowed:
+                logger.debug("Skipping %s — 'cuda' not in hardware_accels", name)
+                continue
+            results.append({
+                "name": name,
+                "label": f"NVIDIA {name.upper().replace('_NVENC', '')} NVENC",
+                "kind": "hardware", "vendor": "nvidia",
+                "codec_family": name.rsplit("_", 1)[0],
                 "lossless_capable": "h264" in name, "realtime_4k_recommended": True,
                 "state": EncoderState.UNSUPPORTED.value, "failure_reason": "",
             })
             logger.info("Hardware encoder detected (unverified): %s", name)
+
         elif name.endswith("_qsv"):
+            if not qsv_allowed:
+                logger.debug("Skipping %s — 'qsv' not in hardware_accels", name)
+                continue
             results.append({
-                "name": name, "label": f"Intel {name.upper().replace('_QSV', '')} Quick Sync",
-                "kind": "hardware", "vendor": "intel", "codec_family": name.split("_")[0],
+                "name": name,
+                "label": f"Intel {name.upper().replace('_QSV', '')} Quick Sync",
+                "kind": "hardware", "vendor": "intel",
+                "codec_family": name.rsplit("_", 1)[0],
                 "lossless_capable": False, "realtime_4k_recommended": True,
                 "state": EncoderState.UNSUPPORTED.value, "failure_reason": "",
             })
             logger.info("Hardware encoder detected (unverified): %s", name)
-        elif name.endswith("_amf"):
-            results.append({
-                "name": name, "label": f"AMD {name.upper().replace('_AMF', '')} AMF",
-                "kind": "hardware", "vendor": "amd", "codec_family": name.split("_")[0],
-                "lossless_capable": False, "realtime_4k_recommended": True,
-                "state": EncoderState.UNSUPPORTED.value, "failure_reason": "",
-            })
-            logger.info("Hardware encoder detected (unverified): %s", name)
-        # Software encoders
+
+        # ------------------------------------------------------------------ #
+        # Software encoders — always included, always AVAILABLE               #
+        # ------------------------------------------------------------------ #
         elif name == "libx264":
             results.append({
                 "name": name, "label": "H.264 Software (x264)",

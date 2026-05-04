@@ -134,18 +134,30 @@ class SystemProfile:
 
     def best_hardware_encoder(self) -> VideoEncoderProfile | None:
         """
-        Returns the highest-priority verified hardware encoder.
-        Priority: NVENC > QSV > AMF
+        Returns the highest-priority *verified* (AVAILABLE) hardware encoder.
+        Priority: AMF > NVENC > QSV
+        (AMF first because this system has an AMD iGPU; NVENC/QSV are
+         secondary and will only be returned if actually AVAILABLE.)
+        If none are AVAILABLE, returns the first *detected* encoder so the
+        caller can decide whether to attempt lazy verification.
         """
-        priority = ["nvenc", "qsv", "amf"]
+        priority = ["amf", "nvenc", "qsv"]
         usable = self.usable_hardware_encoders()
         for vendor_key in priority:
             for enc in usable:
                 if vendor_key in enc.name:
                     return enc
-        # No verified one — return first detected as fallback (caller must verify)
+        # No verified encoder — return first detected so caller can lazy-verify
         detected = self.hardware_encoders()
         return detected[0] if detected else None
+
+    def find_encoder(self, name: str) -> "VideoEncoderProfile | None":
+        """Alias for encoder_by_name() — used by app.py validation."""
+        return self.encoder_by_name(name)
+
+    def encoder_names(self) -> set[str]:
+        """Return the set of all encoder names present in this profile."""
+        return {e.name for e in self.video_encoders}
 
     def with_encoder_verification(
         self, name: str, state: EncoderState, failure_reason: str = ""

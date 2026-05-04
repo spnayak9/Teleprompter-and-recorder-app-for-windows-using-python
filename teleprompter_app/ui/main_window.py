@@ -33,6 +33,9 @@ class MainWindow(QMainWindow):
     preview_camera_changed = Signal(str)
     select_recording_dir_requested = Signal()
     config_saved = Signal()
+    # Emitted when the config dialog verifies encoders so the controller
+    # can update its system_profile with the latest verification state.
+    profile_updated = Signal(object)  # carries the updated SystemProfile
 
     def __init__(self, settings: AppSettings, system_profile: SystemProfile) -> None:
         super().__init__()
@@ -160,6 +163,13 @@ class MainWindow(QMainWindow):
     def _open_config(self) -> None:
         dialog = ConfigDialog(self.system_profile, parent=self)
         dialog.saved.connect(lambda s: self.config_saved.emit())
+        # When the dialog verifies encoders, propagate the updated profile to
+        # the controller AND keep our own copy in sync so re-opening the dialog
+        # doesn't lose the verification results.
+        def _on_profile_updated(new_profile):
+            self.system_profile = new_profile
+            self.profile_updated.emit(new_profile)
+        dialog.profile_updated.connect(_on_profile_updated)
         dialog.exec()
 
     def set_status(self, message: str) -> None:

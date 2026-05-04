@@ -85,6 +85,9 @@ PRESETS = {
 
 class ConfigDialog(QDialog):
     saved = Signal(AppSettings)
+    # Emitted whenever this dialog verifies or updates encoder states so the
+    # controller can replace its stale system_profile with the latest version.
+    profile_updated = Signal(object)  # carries the updated SystemProfile
 
     def __init__(
         self,
@@ -357,9 +360,43 @@ class ConfigDialog(QDialog):
         for mic in self.system_profile.audio_inputs:
             self.audio_device.addItem(mic.name, mic.ffmpeg_name)
 
-        # Hardware encoders — use structured VideoEncoderProfile with display labels
+        # Hardware encoders — run lazy verification for any UNSUPPORTED entries
+        unsupported = [
+            e for e in self.system_profile.video_encoders
+            if e.kind == "hardware" and e.state == EncoderState.UNSUPPORTED
+        ]
+        if unsupported:
+            from teleprompter_app.recording.encoder_probe import verify_encoder_usable
+            from PySide6.QtWidgets import QApplication
+            from PySide6.QtCore import Qt
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                for enc in unsupported:
+                    usable, reason = verify_encoder_usable("ffmpeg", enc.name)
+                    if usable:
+                        self.system_profile = self.system_profile.with_encoder_verification(
+                            enc.name, EncoderState.AVAILABLE, ""
+                        )
+                    else:
+                        self.system_profile = self.system_profile.with_encoder_verification(
+                            enc.name, EncoderState.UNAVAILABLE, reason
+                        )
+                self.system_profile.save_encoder_cache()
+            finally:
+                QApplication.restoreOverrideCursor()
+
+        # Propagate the verified profile back to the controller immediately
+        self.profile_updated.emit(self.system_profile)
+
+        # Populate hardware encoder combo:
+        #   AVAILABLE   → selectable
+        #   UNAVAILABLE → greyed out with tooltip (shows failure reason)
+        #   UNSUPPORTED → hidden (never shown)
         self.hardware_codec.clear()
-        hw_encoders = [e for e in self.system_profile.hardware_encoders() if e.state != EncoderState.UNSUPPORTED]
+        hw_encoders = [
+            e for e in self.system_profile.hardware_encoders()
+            if e.state != EncoderState.UNSUPPORTED
+        ]
         if not hw_encoders:
             self.hardware_codec.addItem("No verified hardware encoders available", None)
             self.hardware_codec.setEnabled(False)
@@ -564,10 +601,14 @@ class ConfigDialog(QDialog):
                     if not usable:
                         self.system_profile = self.system_profile.with_encoder_verification(hw_enc, EncoderState.UNAVAILABLE, reason)
                         self.system_profile.save_encoder_cache()
+                        # Propagate failure so controller profile is also updated
+                        self.profile_updated.emit(self.system_profile)
                         QMessageBox.warning(self, "Encoder Verification Failed", f"The encoder {hw_enc} failed to verify:\n{reason}")
                         return
                     self.system_profile = self.system_profile.with_encoder_verification(hw_enc, EncoderState.AVAILABLE, "")
                     self.system_profile.save_encoder_cache()
+                    # Propagate success so controller marks this encoder AVAILABLE
+                    self.profile_updated.emit(self.system_profile)
                 finally:
                     QApplication.restoreOverrideCursor()
 
