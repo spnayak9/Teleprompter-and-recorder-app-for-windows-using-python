@@ -294,8 +294,9 @@ class TeleprompterController(QObject):
         for match in matches:
             self.window.highlight_word(match.token_index, match.confidence)
 
-        # Subtitles are now driven by the window.teleprompter.word_highlighted signal
-        # which is connected to self._on_word_highlighted.
+        # 2. Subtitles - SPEECH mode logic
+        # In SPEECH timing mode, recognition matches drive the highlighter progression
+        # which in turn records into the subtitle timeline.
         pass
 
     def _on_recognition_error(self, message: str):
@@ -383,13 +384,12 @@ class TeleprompterController(QObject):
             logger.exception("Could not pause preview before video recording")
 
     def _ensure_recognition_for_recording(self) -> None:
-        # Per user request, voice recognition is disabled for subtitles.
-        # However, we still support it for highlighting if the user manually started it.
-        # But for deterministic recording, we rely on the highlighter_timer.
-        pass
+        if not self.vosk_bridge.is_listening():
+            self._recognition_started_by_recording = True
+            self.start_listening()
 
     def _on_word_highlighted(self, index: int) -> None:
-        if self._is_recording and self.subtitle_timeline.is_active():
+        if self._is_recording and self.subtitle_timeline:
             self.subtitle_timeline.record_highlight(index)
             self.current_highlight_index = index
 
@@ -574,8 +574,13 @@ class TeleprompterController(QObject):
             # 6. Store state
             self.current_recording_paths = paths
             self.current_recording_mode = mode_spec
+            
+            self._is_recording = True
 
-            # 7. Ensure recognition for SRT
+            # 7. Start recognition if needed for highlighting
+            if mode_spec.srt and self.settings.subtitle_timing_mode == SubtitleTimingMode.SPEECH:
+                self._ensure_recognition_for_recording()
+
             # 8. Initialize script subtitle generator & timeline
             if mode_spec.srt:
                 self.subtitle_generator = ScriptSubtitleGenerator(
@@ -585,15 +590,16 @@ class TeleprompterController(QObject):
                 self.subtitle_timeline.start()
                 self.current_highlight_index = -1 # Start from beginning
                 
-                # Only start the auto-highlighter timer if in AUTO mode
+                # Always record an initial anchor at T=0
+                start_idx = max(0, self.window.teleprompter.current_index)
+                self.window.highlight_word(start_idx)
+                self.subtitle_timeline.record_highlight(start_idx)
+                
+                # If in AUTO mode, start the highlighter clock
                 if self.settings.subtitle_timing_mode == SubtitleTimingMode.AUTO:
                     wpm = self.settings.words_per_minute or 150
                     interval_ms = int(60000 / wpm)
                     self.highlighter_timer.start(interval_ms)
-                    self._advance_highlighter() # Trigger first word immediately
-                else:
-                    # In MANUAL mode, we still start at word 0
-                    self.window.highlight_word(0)
                 
                 logger.info("Script subtitle generator & timeline started (Mode: %s).", self.settings.subtitle_timing_mode)
 
@@ -603,8 +609,7 @@ class TeleprompterController(QObject):
                 camera=recording_camera,
                 paths=paths,
             )
-
-            self._is_recording = True
+            
             self.window.main_controls.set_recording_state(True)
             self.window.set_status(f"Recording session {paths.session_id} in progress...")
 
@@ -800,6 +805,26 @@ class TeleprompterController(QObject):
         logger.info("Application shutdown complete")
 
     def _validate_recording_settings(self) -> bool:
+        mode_key = normalize_recording_mode(self.settings.recording_mode)
+        mode_spec = MODE_MAP.get(mode_key)
+        if not mode_spec:
+            return False
+
+        # If SRT only, we just need a script
+        if mode_spec.srt and not mode_spec.video and not mode_spec.audio:
+            if not self.current_script_text:
+                QMessageBox.critical(self.window, "No Script", "Please load a script before recording subtitles.")
+                return False
+            return True
+
+        # Standard A/V checks
+        if mode_spec.video and not self.settings.recording_video_device:
+            QMessageBox.critical(self.window, "No Camera", "Please select a camera in Configure.")
+            return False
+        if mode_spec.audio and not self.settings.audio_device:
+            QMessageBox.critical(self.window, "No Microphone", "Please select a microphone in Configure.")
+            return False
+
         risk = self._encoding_risk_level(self.settings)
         if risk != "high":
             return True

@@ -343,8 +343,9 @@ class ConfigDialog(QDialog):
         self.subtitle_mode.addItem("Both (v1 + v2)", "both")
 
         self.subtitle_timing_mode = QComboBox()
-        self.subtitle_timing_mode.addItem("Manual (Spoken-timed)", SubtitleTimingMode.MANUAL)
-        self.subtitle_timing_mode.addItem("Automatic (Timer-driven)", SubtitleTimingMode.AUTO)
+        self.subtitle_timing_mode.addItem("Manual (Space/Arrows)", SubtitleTimingMode.MANUAL)
+        self.subtitle_timing_mode.addItem("Automatic (Fixed WPM)", SubtitleTimingMode.AUTO)
+        self.subtitle_timing_mode.addItem("Voice-driven (Follows you)", SubtitleTimingMode.SPEECH)
 
         from PySide6.QtWidgets import QSpinBox
         self.words_per_minute = QSpinBox()
@@ -352,8 +353,9 @@ class ConfigDialog(QDialog):
         self.words_per_minute.setSuffix(" WPM")
 
         self.subtitle_help = QLabel(
-            "<b>Manual</b>: Subtitles match your actual reading speed (driven by keys/scroll).\n"
-            "<b>Automatic</b>: Subtitles advance at a fixed speed (driven by timer)."
+            "<b>Manual</b>: Highlights follow your keys.<br/>"
+            "<b>Automatic</b>: Highlights follow a timer.<br/>"
+            "<b>Voice-driven</b>: Highlights follow your voice (AI)."
         )
         self.subtitle_help.setWordWrap(True)
         self.subtitle_help.setStyleSheet("color: #666; font-size: 11px;")

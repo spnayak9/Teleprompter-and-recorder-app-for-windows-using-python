@@ -9,8 +9,9 @@ from typing import Any
 
 
 class SubtitleTimingMode(str, Enum):
-    MANUAL = "manual"  # human-driven
-    AUTO = "auto"      # timer-driven
+    MANUAL = "manual"   # human-driven (keys)
+    AUTO = "auto"       # timer-driven (WPM)
+    SPEECH = "speech"   # voice-driven (alignment)
 
 
 @dataclass(frozen=True, slots=True)
