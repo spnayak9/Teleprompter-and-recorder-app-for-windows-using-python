@@ -25,6 +25,7 @@ from teleprompter_app.recording.session_controller import (
 )
 from teleprompter_app.recording.session_paths import create_session_paths
 from teleprompter_app.recording.script_subtitle_generator import ScriptSubtitleGenerator
+from teleprompter_app.recording.subtitle_timeline import SubtitleTimeline
 from teleprompter_app.recording.media_probe import write_ffprobe_json
 
 logger = logging.getLogger(__name__)
@@ -83,11 +84,18 @@ class TeleprompterController(QObject):
         self._restart_preview_after_recording = False
         self._recognition_started_by_recording = False
         self.subtitle_generator: ScriptSubtitleGenerator | None = None
+        self.subtitle_timeline: SubtitleTimeline = SubtitleTimeline()
         self.current_script_text: str = ""
+        self.current_script_tokens: list = []
         self.current_recording_paths = None
         self.current_recording_mode = None
         self._is_recording = False
         self._preview_restart_pending = False
+        
+        # Highlighter clock for deterministic progression during recording
+        self.highlighter_timer = QTimer(self)
+        self.highlighter_timer.timeout.connect(self._advance_highlighter)
+        self.current_highlight_index = -1
         
         self._connect_signals()
         
@@ -128,6 +136,9 @@ class TeleprompterController(QObject):
         self.recognition_bridge.result_ready.connect(self._on_recognition_result)
         self.recognition_bridge.status_changed.connect(self.window.set_status)
         self.recognition_bridge.error_occurred.connect(self._on_recognition_error)
+        
+        # Highlighter -> Timeline
+        self.window.teleprompter.word_highlighted.connect(self._on_word_highlighted)
 
     def apply_settings(self, settings_dict: dict):
         self.settings = self.settings.updated(settings_dict)
@@ -225,7 +236,8 @@ class TeleprompterController(QObject):
             tokenized = self.tokenizer.tokenize_html(parsed.html)
             
             self.alignment_engine.set_tokens(tokenized.tokens)
-            self.current_script_text = parsed.plain_text  # Extract for subtitles
+            self.current_script_text = parsed.plain_text
+            self.current_script_tokens = tokenized.tokens
             self.window.set_document(tokenized.html, tokenized.tokens)
             self.window.set_status(f"Loaded script: {path.name}")
         except Exception as e:
@@ -275,7 +287,8 @@ class TeleprompterController(QObject):
         for match in matches:
             self.window.highlight_word(match.token_index, match.confidence)
 
-        # 2. Subtitle Generation - REMOVED (Now deterministic in ScriptSubtitleGenerator)
+        # Subtitles are now driven by the window.teleprompter.word_highlighted signal
+        # which is connected to self._on_word_highlighted.
         pass
 
     def _on_recognition_error(self, message: str):
@@ -363,10 +376,25 @@ class TeleprompterController(QObject):
             logger.exception("Could not pause preview before video recording")
 
     def _ensure_recognition_for_recording(self) -> None:
-        # Recognition is no longer used for subtitles.
-        # It is only kept for teleprompter highlighting if requested.
-        # But per user request "Remove all voice recognition usage" we disable it for recording.
+        # Per user request, voice recognition is disabled for subtitles.
+        # However, we still support it for highlighting if the user manually started it.
+        # But for deterministic recording, we rely on the highlighter_timer.
         pass
+
+    def _on_word_highlighted(self, index: int) -> None:
+        if self._is_recording and self.subtitle_timeline.is_active():
+            self.subtitle_timeline.record_highlight(index)
+            self.current_highlight_index = index
+
+    def _advance_highlighter(self) -> None:
+        if not self._is_recording:
+            return
+        
+        next_index = self.current_highlight_index + 1
+        if next_index < len(self.current_script_tokens):
+            self.window.highlight_word(next_index)
+        else:
+            self.highlighter_timer.stop()
 
     @Slot()
     def start_recording(self):
@@ -504,18 +532,22 @@ class TeleprompterController(QObject):
             self.current_recording_mode = mode_spec
 
             # 7. Ensure recognition for SRT
-            if mode_spec.srt:
-                self._ensure_recognition_for_recording()
-
-            # 8. Start subtitle writer (Script-based)
+            # 8. Initialize script subtitle generator & timeline
             if mode_spec.srt:
                 self.subtitle_generator = ScriptSubtitleGenerator(
                     self.current_script_text,
-                    wpm=self.settings.words_per_minute
+                    tokens=self.current_script_tokens
                 )
-                # Generation and writing happen in stop_recording or on-the-fly
-                # For now, we'll write them at the end.
-                logger.info("Script subtitle generator initialized.")
+                self.subtitle_timeline.start()
+                self.current_highlight_index = -1 # Start from beginning
+                
+                # Start the highlighter clock
+                wpm = self.settings.words_per_minute or 150
+                interval_ms = int(60000 / wpm)
+                self.highlighter_timer.start(interval_ms)
+                self._advance_highlighter() # Trigger first word immediately
+                
+                logger.info("Script subtitle generator & highlighter timer started (%d WPM).", wpm)
 
             # 9. Start session
             self.recording_session.start(
@@ -555,15 +587,18 @@ class TeleprompterController(QObject):
 
             if self.subtitle_generator:
                 try:
+                    self.highlighter_timer.stop()
                     duration = time.time() - self.recording_started_at if self.recording_started_at else None
-                    # Write both SRT versions simultaneously
+                    # Write both SRT versions simultaneously using captured timeline
                     self.subtitle_generator.write_all(
                         self.current_recording_paths.subtitle_path,
+                        timeline=self.subtitle_timeline,
                         mode=self.settings.subtitle_mode,
                         max_duration=duration
                     )
                 finally:
                     self.subtitle_generator = None
+                    self.subtitle_timeline = SubtitleTimeline()
 
             if self._recognition_started_by_recording:
                 self.stop_listening()
@@ -596,15 +631,18 @@ class TeleprompterController(QObject):
         
         if self.subtitle_generator:
             try:
+                self.highlighter_timer.stop()
                 # Use cached started_at if still available, or just save full script
                 duration = time.time() - self.recording_started_at if self.recording_started_at else None
                 self.subtitle_generator.write_all(
                     self.current_recording_paths.subtitle_path,
+                    timeline=self.subtitle_timeline,
                     mode=self.settings.subtitle_mode,
                     max_duration=duration
                 )
             finally:
                 self.subtitle_generator = None
+                self.subtitle_timeline = SubtitleTimeline()
 
         self.window.set_recording(False)
         self.window.statusBar().showMessage("Recording stopped.")
@@ -687,13 +725,16 @@ class TeleprompterController(QObject):
             if self.subtitle_generator:
                 # If shutdown happens during recording, we still try to save what we can
                 if self.current_recording_paths:
+                    self.highlighter_timer.stop()
                     duration = time.time() - self.recording_started_at if self.recording_started_at else None
                     self.subtitle_generator.write_all(
                         self.current_recording_paths.subtitle_path,
+                        timeline=self.subtitle_timeline,
                         mode=self.settings.subtitle_mode,
                         max_duration=duration
                     )
                 self.subtitle_generator = None
+                self.subtitle_timeline = SubtitleTimeline()
         except Exception:
             logger.exception("Could not stop subtitle generator during shutdown")
 

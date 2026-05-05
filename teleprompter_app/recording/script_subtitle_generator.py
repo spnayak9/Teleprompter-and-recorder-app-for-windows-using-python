@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
-import re
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from teleprompter_app.recording.subtitle_timeline import SubtitleTimeline, SubtitleEvent
 
 logger = logging.getLogger(__name__)
 
@@ -30,89 +32,129 @@ def format_srt_time(seconds: float) -> str:
 
 class ScriptSubtitleGenerator:
     """
-    Generates deterministic subtitles from a teleprompter script.
-    Calculates timing based on Words Per Minute (WPM).
+    Generates subtitles from recorded teleprompter progression.
+    Ground truth is the SubtitleTimeline captured during recording.
     """
 
-    def __init__(self, script_text: str, wpm: int = 150) -> None:
+    def __init__(self, script_text: str, tokens: list[Any] = None) -> None:
         self.script_text = script_text.strip()
-        self.wpm = wpm
-        self.seconds_per_word = 60.0 / wpm
+        self.tokens = tokens or []
         
-        # Phrases (v1): Lines from the script
-        self.phrases: list[str] = [
-            line.strip() for line in self.script_text.splitlines() 
-            if line.strip()
-        ]
+        # Phrases (v1): Groups of words based on line breaks
+        self.phrases: list[list[int]] = []
+        current_phrase = []
         
-        # Words (v2): All individual words
-        self.words: list[str] = []
-        for phrase in self.phrases:
-            self.words.extend(phrase.split())
+        # We need to know which words belong to which phrase (line)
+        lines = self.script_text.splitlines()
+        token_ptr = 0
+        for line in lines:
+            line_text = line.strip()
+            if not line_text:
+                continue
+            
+            phrase_token_indices = []
+            words_in_line = line_text.split()
+            for _ in words_in_line:
+                if token_ptr < len(self.tokens):
+                    phrase_token_indices.append(token_ptr)
+                    token_ptr += 1
+            
+            if phrase_token_indices:
+                self.phrases.append(phrase_token_indices)
 
-    def generate_v1_phrase_srt(self, max_duration: float | None = None) -> str:
-        """v1: Grouped words based on line breaks in script."""
-        blocks: list[SubtitleBlock] = []
-        current_time = 0.0
+    def generate_v1_phrase_srt(self, timeline: SubtitleTimeline, max_duration: float | None = None) -> str:
+        """v1: Grouped words based on line breaks, using actual timestamps."""
+        events = timeline.get_events()
+        if not events:
+            return ""
+
+        # Map token index to timestamp
+        token_times = {ev.token_index: ev.timestamp for ev in events}
         
-        for i, phrase in enumerate(self.phrases, start=1):
-            word_count = len(phrase.split())
-            duration = word_count * self.seconds_per_word
+        blocks: list[SubtitleBlock] = []
+        block_idx = 1
+        
+        for phrase_indices in self.phrases:
+            # Find start time (first word of phrase that has an event)
+            start_time = None
+            for idx in phrase_indices:
+                if idx in token_times:
+                    start_time = token_times[idx]
+                    break
             
-            end_time = current_time + duration
+            if start_time is None:
+                continue
+                
+            # Find end time (start time of the word after the last word of this phrase)
+            last_idx = phrase_indices[-1]
+            end_time = None
             
-            # Clip to max_duration if provided
-            if max_duration is not None and current_time >= max_duration:
+            # Find the very next event after the last word of this phrase
+            for ev in events:
+                if ev.token_index > last_idx:
+                    end_time = ev.timestamp
+                    break
+            
+            if end_time is None:
+                end_time = max_duration or (events[-1].timestamp + 1.0)
+
+            # Construct phrase text from tokens
+            phrase_text = " ".join(self.tokens[i].text for i in phrase_indices if i < len(self.tokens))
+
+            if max_duration is not None and start_time >= max_duration:
                 break
             
-            display_end = end_time
-            if max_duration is not None and end_time > max_duration:
-                display_end = max_duration
+            display_end = min(end_time, max_duration) if max_duration is not None else end_time
 
             blocks.append(SubtitleBlock(
-                index=i,
-                start=current_time,
+                index=block_idx,
+                start=start_time,
                 end=display_end,
-                text=phrase
+                text=phrase_text
             ))
-            current_time += duration
+            block_idx += 1
             
         return "\n".join(b.to_srt_block() for b in blocks)
 
-    def generate_v2_word_srt(self, max_duration: float | None = None) -> str:
-        """v2: Single-word subtitles."""
+    def generate_v2_word_srt(self, timeline: SubtitleTimeline, max_duration: float | None = None) -> str:
+        """v2: Single-word subtitles using actual timestamps."""
+        events = timeline.get_events()
+        if not events:
+            return ""
+            
         blocks: list[SubtitleBlock] = []
-        current_time = 0.0
         
-        for i, word in enumerate(self.words, start=1):
-            duration = self.seconds_per_word
-            end_time = current_time + duration
+        for i, event in enumerate(events):
+            start_time = event.timestamp
+            
+            # End time is the start of the next word event
+            if i + 1 < len(events):
+                end_time = events[i+1].timestamp
+            else:
+                end_time = max_duration or (start_time + 1.0)
 
-            if max_duration is not None and current_time >= max_duration:
+            if max_duration is not None and start_time >= max_duration:
                 break
-
-            display_end = end_time
-            if max_duration is not None and end_time > max_duration:
-                display_end = max_duration
+                
+            display_end = min(end_time, max_duration) if max_duration is not None else end_time
+            
+            token_text = self.tokens[event.token_index].text if event.token_index < len(self.tokens) else "?"
 
             blocks.append(SubtitleBlock(
-                index=i,
-                start=current_time,
+                index=i + 1,
+                start=start_time,
                 end=display_end,
-                text=word
+                text=token_text
             ))
-            current_time += duration
             
         return "\n".join(b.to_srt_block() for b in blocks)
 
-    def write_all(self, base_srt_path: Path, mode: str = "both", max_duration: float | None = None) -> list[Path]:
+    def write_all(self, base_srt_path: Path, timeline: SubtitleTimeline, mode: str = "both", max_duration: float | None = None) -> list[Path]:
         """
-        Writes one or both SRT versions to disk.
-        Returns a list of created file paths.
+        Writes one or both SRT versions to disk using recorded timeline.
         """
         paths: list[Path] = []
         base_srt_path = Path(base_srt_path)
-        
         stem = base_srt_path.stem
         suffix = base_srt_path.suffix
         parent = base_srt_path.parent
@@ -120,7 +162,7 @@ class ScriptSubtitleGenerator:
         if mode in ("phrase", "both"):
             phrase_path = parent / f"{stem}.phrase{suffix}"
             try:
-                phrase_path.write_text(self.generate_v1_phrase_srt(max_duration), encoding="utf-8")
+                phrase_path.write_text(self.generate_v1_phrase_srt(timeline, max_duration), encoding="utf-8")
                 paths.append(phrase_path)
                 logger.info("Script subtitles (phrase) saved: %s", phrase_path)
             except Exception as e:
@@ -129,7 +171,7 @@ class ScriptSubtitleGenerator:
         if mode in ("word", "both"):
             word_path = parent / f"{stem}.word{suffix}"
             try:
-                word_path.write_text(self.generate_v2_word_srt(max_duration), encoding="utf-8")
+                word_path.write_text(self.generate_v2_word_srt(timeline, max_duration), encoding="utf-8")
                 paths.append(word_path)
                 logger.info("Script subtitles (word) saved: %s", word_path)
             except Exception as e:

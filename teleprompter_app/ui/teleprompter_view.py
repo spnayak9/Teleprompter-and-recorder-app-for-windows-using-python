@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QFrame, QTextBrowser, QTextEdit
 
@@ -14,6 +14,8 @@ from teleprompter_app.utils.config import AppSettings
 
 class TeleprompterView(QTextBrowser):
     """Render tokenized HTML and keep the spoken word centered."""
+
+    word_highlighted = Signal(int)
 
     def __init__(self, settings: AppSettings, parent=None) -> None:  # noqa: ANN001
         super().__init__(parent)
@@ -89,6 +91,7 @@ class TeleprompterView(QTextBrowser):
             self._apply_progress_format(start, index)
 
         self._show_current_word(index, scroll=True)
+        self.word_highlighted.emit(index)
 
     def _show_current_word(self, index: int, scroll: bool) -> None:
         selections: list[QTextEdit.ExtraSelection] = []
