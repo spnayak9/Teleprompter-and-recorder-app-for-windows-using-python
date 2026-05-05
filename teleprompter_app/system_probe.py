@@ -25,7 +25,7 @@ SIZE_RE = re.compile(r"(?:min|max)?\s*s=(?P<w>\d+)x(?P<h>\d+)", re.IGNORECASE)
 PIXEL_RE = re.compile(r"pixel_format=(?P<fmt>[a-zA-Z0-9_]+)", re.IGNORECASE)
 VCODEC_RE = re.compile(r"vcodec=(?P<fmt>[a-zA-Z0-9_]+)", re.IGNORECASE)
 INTERVAL_RE = re.compile(r"(?:min|max)\s*interval=(?P<interval>\d+)", re.IGNORECASE)
-
+AUDIO_OPT_RE = re.compile(r"ch=\s*(?P<ch>\d+),\s*bits=\s*(?P<bits>\d+),\s*rate=\s*(?P<rate>\d+)", re.IGNORECASE)
 
 
 def interval_100ns_to_fps(interval: int) -> float:
@@ -172,6 +172,32 @@ def _ffmpeg_list_camera_modes(ffmpeg_path: str, ffmpeg_device_name: str) -> tupl
             reverse=True,
         )
     )
+
+
+def _ffmpeg_list_audio_modes(ffmpeg_path: str, ffmpeg_device_name: str) -> tuple[tuple[int, int, int], ...]:
+    output = _run_ffmpeg(
+        [
+            ffmpeg_path,
+            "-hide_banner",
+            "-f",
+            "dshow",
+            "-list_options",
+            "true",
+            "-i",
+            f"audio={ffmpeg_device_name}",
+        ],
+        timeout=15,
+    )
+
+    modes: set[tuple[int, int, int]] = set()
+    for match in AUDIO_OPT_RE.finditer(output):
+        ch = int(match.group("ch"))
+        bits = int(match.group("bits"))
+        rate = int(match.group("rate"))
+        modes.add((ch, bits, rate))
+        
+    # Sort highest quality first: rate, then bits, then channels
+    return tuple(sorted(modes, key=lambda m: (m[2], m[1], m[0]), reverse=True))
 
 
 def _verify_camera_mode(
@@ -348,12 +374,14 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
         for d in encoder_dicts
     )
 
+    audio_inputs = []
+    for name in ffmpeg_audio_devices:
+        audio_formats = _ffmpeg_list_audio_modes(ffmpeg_path, name)
+        audio_inputs.append(AudioProfile(name=name, ffmpeg_name=name, formats=audio_formats))
+
     profile = SystemProfile(
         cameras=tuple(cameras),
-        audio_inputs=tuple(
-            AudioProfile(name=name, ffmpeg_name=name)
-            for name in ffmpeg_audio_devices
-        ),
+        audio_inputs=tuple(audio_inputs),
         video_codecs=video_codecs,
         audio_codecs=audio_codecs,
         containers=containers,
@@ -381,6 +409,9 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
         len(hw_enc),
         len(sw_enc),
     )
+    for a in profile.audio_inputs:
+        log.info("Audio device %s supports formats: %s", a.ffmpeg_name, a.formats)
+
     if hw_enc:
         log.info("Hardware encoders (detected, lazy verify): %s",
                  [(e.name, e.state.value) for e in hw_enc])

@@ -233,6 +233,11 @@ def build_audio_command(
     if not settings.audio_device:
         raise RuntimeError("No audio device selected")
 
+    codec = settings.audio_codec
+    if codec == "wav_pcm":
+        depth = getattr(settings, "recording_bit_depth", 16)
+        codec = f"pcm_s{depth}le"
+
     cmd = [
         ffmpeg_path,
         "-hide_banner",
@@ -241,7 +246,7 @@ def build_audio_command(
         "-thread_queue_size", str(settings.thread_queue_size),
         "-i", f"audio={settings.audio_device}",
         "-vn",
-        "-c:a", settings.audio_codec,
+        "-c:a", codec,
     ]
 
     if getattr(settings, "audio_bitrate", "") and settings.audio_codec in {"libmp3lame", "aac", "libopus"}:

@@ -151,6 +151,7 @@ class ConfigDialog(QDialog):
 
         self.recording_camera.currentIndexChanged.connect(self._on_camera_changed)
         self.preview_background_mode.currentIndexChanged.connect(self._on_preview_background_changed)
+        self.audio_device.currentIndexChanged.connect(self._on_audio_device_changed)
         self._on_preview_background_changed()
 
     def _on_preview_background_changed(self) -> None:
@@ -300,23 +301,22 @@ class ConfigDialog(QDialog):
         self.recording_sample_rate = QComboBox()
         self.recording_channels = QComboBox()
         self.audio_codec = QComboBox()
-        self.audio_bitrate = QComboBox()
+        self.recording_bit_depth = QComboBox()
 
-        for sr in [16000, 32000, 44100, 48000]:
-            self.recording_sample_rate.addItem(f"{sr} Hz", sr)
-
+        # Will be dynamically populated in _on_audio_device_changed
+        self.recording_sample_rate.addItem("48000 Hz", 48000)
         self.recording_channels.addItem("Mono", 1)
-        self.recording_channels.addItem("Stereo", 2)
 
-        self.audio_codec.addItem("FLAC lossless", "flac")
+        self.audio_codec.addItem("FLAC (lossless)", "flac")
+        self.audio_codec.addItem("WAV / PCM (uncompressed)", "wav_pcm")
         self.audio_codec.addItem("MP3", "libmp3lame")
-        self.audio_codec.addItem("WAV PCM 16-bit", "pcm_s16le")
         self.audio_codec.addItem("AAC", "aac")
-        self.audio_codec.addItem("Opus", "libopus")
 
-        self.audio_bitrate.addItem("Lossless / Auto", "")
-        for br in ["128k", "192k", "256k", "320k"]:
-            self.audio_bitrate.addItem(br, br)
+        self.recording_bit_depth.addItem("16-bit", 16)
+        self.recording_bit_depth.addItem("24-bit", 24)
+        self.recording_bit_depth.addItem("32-bit", 32)
+        
+        self.audio_codec.currentIndexChanged.connect(self._on_audio_codec_changed)
 
         form.addRow("Container", self.container)
         form.addRow("Output directory", self.output_dir)
@@ -324,7 +324,15 @@ class ConfigDialog(QDialog):
         form.addRow("Audio Sample Rate", self.recording_sample_rate)
         form.addRow("Audio Channels", self.recording_channels)
         form.addRow("Audio Codec", self.audio_codec)
-        form.addRow("Audio Bitrate", self.audio_bitrate)
+        form.addRow("Audio Bit Depth", self.recording_bit_depth)
+
+    def _on_audio_codec_changed(self) -> None:
+        codec = self.audio_codec.currentData()
+        # Only WAV/PCM directly maps bit depth via pcm_s16le, etc.
+        # FLAC uses 16/24 internally but we can allow it to be visible.
+        # MP3/AAC do not use PCM bit depths.
+        is_lossless = codec in ("flac", "wav_pcm")
+        self.recording_bit_depth.setEnabled(is_lossless)
 
     def _populate_from_profile(self) -> None:
         self.recording_camera.clear()
@@ -359,6 +367,9 @@ class ConfigDialog(QDialog):
 
         for mic in self.system_profile.audio_inputs:
             self.audio_device.addItem(mic.name, mic.ffmpeg_name)
+
+        if self.audio_device.count() > 0:
+            self._on_audio_device_changed()
 
         # Hardware encoders — run lazy verification for any UNSUPPORTED entries
         unsupported = [
@@ -504,6 +515,46 @@ class ConfigDialog(QDialog):
                     {"format_name": fmt_name, "format_kind": fmt_kind},
                 )
 
+    def _on_audio_device_changed(self) -> None:
+        mic_name = self.audio_device.currentData()
+        if not mic_name:
+            return
+
+        mic = next((a for a in self.system_profile.audio_inputs if a.ffmpeg_name == mic_name), None)
+        if not mic or not getattr(mic, 'formats', None):
+            return
+
+        with QSignalBlocker(self.recording_sample_rate), QSignalBlocker(self.recording_channels):
+            prev_sr = self.recording_sample_rate.currentData()
+            prev_ch = self.recording_channels.currentData()
+
+            self.recording_sample_rate.clear()
+            self.recording_channels.clear()
+
+            rates = sorted(list(set(f[2] for f in mic.formats)), reverse=True)
+            channels = sorted(list(set(f[0] for f in mic.formats)), reverse=True)
+
+            if not rates:
+                rates = [48000, 44100]
+            if not channels:
+                channels = [2, 1]
+
+            for sr in rates:
+                label = f"{sr} Hz"
+                if sr == 48000 or sr == 44100:
+                    label += " (Native)"
+                elif sr > 48000:
+                    label += " (High-Res)"
+                self.recording_sample_rate.addItem(label, sr)
+
+            for ch in channels:
+                self.recording_channels.addItem("Stereo" if ch == 2 else "Mono", ch)
+
+            if prev_sr:
+                self._set_combo_by_data(self.recording_sample_rate, prev_sr)
+            if prev_ch:
+                self._set_combo_by_data(self.recording_channels, prev_ch)
+
     def _restore_settings(self) -> None:
         rec_cam = self.settings.recording_video_device or self.settings.video_device
         pre_cam = self.settings.preview_video_device or "__same_as_recording__"
@@ -533,11 +584,13 @@ class ConfigDialog(QDialog):
         self._on_encoding_mode_changed()
 
         self._set_combo_by_data(self.audio_device, self.settings.audio_device)
+        self._on_audio_device_changed()
         self._set_combo_by_data(self.container, self.settings.container)
         self._set_combo_by_data(self.recording_sample_rate, self.settings.recording_sample_rate)
         self._set_combo_by_data(self.recording_channels, self.settings.recording_channels)
         self._set_combo_by_data(self.audio_codec, self.settings.audio_codec)
-        self._set_combo_by_data(self.audio_bitrate, self.settings.audio_bitrate)
+        self._set_combo_by_data(self.recording_bit_depth, self.settings.recording_bit_depth)
+        self._on_audio_codec_changed()
 
         self.output_dir.setText(self.settings.output_dir)
         # Preset defaults to custom since we're restoring existing settings
@@ -640,12 +693,13 @@ class ConfigDialog(QDialog):
             "quality_preset": self.quality_preset.currentData() or "hq",
 
             # Output
+            "audio_device": self.audio_device.currentData() or "",
             "container": self.container.currentData() or "mkv",
-            "output_dir": self.output_dir.text().strip(),
-            "recording_sample_rate": int(self.recording_sample_rate.currentData() or 48000),
-            "recording_channels": int(self.recording_channels.currentData() or 1),
+            "recording_sample_rate": self.recording_sample_rate.currentData() or 48000,
+            "recording_channels": self.recording_channels.currentData() or 1,
             "audio_codec": self.audio_codec.currentData() or "flac",
-            "audio_bitrate": self.audio_bitrate.currentData() or "",
+            "recording_bit_depth": self.recording_bit_depth.currentData() or 16,
+            "output_dir": self.output_dir.text().strip(),
         }
 
         settings = current.updated(updates)

@@ -29,6 +29,8 @@ class CameraProfile:
 class AudioProfile:
     name: str
     ffmpeg_name: str
+    # formats: tuple of (channels, bits, sample_rate)
+    formats: tuple[tuple[int, int, int], ...] = field(default_factory=tuple)
 
 
 from enum import StrEnum
