@@ -67,6 +67,11 @@ class AppSettings:
     preview_video_device: str = "__same_as_recording__"
     preview_enabled_during_recording: bool = True
     
+    # Subtitles
+    subtitle_source: str = "script"  # script | voice
+    subtitle_mode: str = "both"     # phrase | word | both
+    words_per_minute: int = 150
+    
     # Recorder - Performance
     rtbufsize: str = "200M"
     thread_queue_size: int = 512

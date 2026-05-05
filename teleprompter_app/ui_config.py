@@ -111,14 +111,17 @@ class ConfigDialog(QDialog):
         self.device_tab = QWidget()
         self.video_tab = QWidget()
         self.output_tab = QWidget()
+        self.subtitle_tab = QWidget()
 
         self.tabs.addTab(self.device_tab, "Device")
         self.tabs.addTab(self.video_tab, "Video")
         self.tabs.addTab(self.output_tab, "Output")
+        self.tabs.addTab(self.subtitle_tab, "Subtitles")
 
         self._build_device_tab()
         self._build_video_tab()
         self._build_output_tab()
+        self._build_subtitle_tab()
 
         self.save_btn = QPushButton("Save")
         self.cancel_btn = QPushButton("Cancel")
@@ -325,6 +328,36 @@ class ConfigDialog(QDialog):
         form.addRow("Audio Channels", self.recording_channels)
         form.addRow("Audio Codec", self.audio_codec)
         form.addRow("Audio Bit Depth", self.recording_bit_depth)
+
+    def _build_subtitle_tab(self) -> None:
+        form = QFormLayout(self.subtitle_tab)
+
+        self.subtitle_source = QComboBox()
+        self.subtitle_source.addItem("Teleprompter Script (Deterministic)", "script")
+        self.subtitle_source.addItem("Voice Recognition (Legacy/Disabled)", "voice")
+        self.subtitle_source.setEnabled(False) # For now, voice is disabled as per goal
+
+        self.subtitle_mode = QComboBox()
+        self.subtitle_mode.addItem("Phrases (v1)", "phrase")
+        self.subtitle_mode.addItem("Word-by-word (v2)", "word")
+        self.subtitle_mode.addItem("Both (v1 + v2)", "both")
+
+        from PySide6.QtWidgets import QSpinBox
+        self.words_per_minute = QSpinBox()
+        self.words_per_minute.setRange(50, 400)
+        self.words_per_minute.setSuffix(" WPM")
+
+        self.subtitle_help = QLabel(
+            "Subtitles are generated based on the script text and reading speed.\n"
+            "This ensures 100% accuracy to your script."
+        )
+        self.subtitle_help.setWordWrap(True)
+        self.subtitle_help.setStyleSheet("color: #666; font-size: 11px;")
+
+        form.addRow("Source", self.subtitle_source)
+        form.addRow("Display Mode", self.subtitle_mode)
+        form.addRow("Reading Speed", self.words_per_minute)
+        form.addRow(self.subtitle_help)
 
     def _on_audio_codec_changed(self) -> None:
         codec = self.audio_codec.currentData()
@@ -592,6 +625,11 @@ class ConfigDialog(QDialog):
         self._set_combo_by_data(self.recording_bit_depth, self.settings.recording_bit_depth)
         self._on_audio_codec_changed()
 
+        # Subtitles
+        self._set_combo_by_data(self.subtitle_source, self.settings.subtitle_source)
+        self._set_combo_by_data(self.subtitle_mode, self.settings.subtitle_mode)
+        self.words_per_minute.setValue(self.settings.words_per_minute)
+
         self.output_dir.setText(self.settings.output_dir)
         # Preset defaults to custom since we're restoring existing settings
         self._set_combo_by_data(self.preset_combo, "custom")
@@ -700,6 +738,11 @@ class ConfigDialog(QDialog):
             "audio_codec": self.audio_codec.currentData() or "flac",
             "recording_bit_depth": self.recording_bit_depth.currentData() or 16,
             "output_dir": self.output_dir.text().strip(),
+
+            # Subtitles
+            "subtitle_source": self.subtitle_source.currentData() or "script",
+            "subtitle_mode": self.subtitle_mode.currentData() or "both",
+            "words_per_minute": self.words_per_minute.value(),
         }
 
         settings = current.updated(updates)

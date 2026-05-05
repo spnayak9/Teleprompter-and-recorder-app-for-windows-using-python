@@ -24,7 +24,7 @@ from teleprompter_app.recording.session_controller import (
     normalize_recording_mode,
 )
 from teleprompter_app.recording.session_paths import create_session_paths
-from teleprompter_app.recording.subtitle_generator import SubtitleGenerator
+from teleprompter_app.recording.script_subtitle_generator import ScriptSubtitleGenerator
 from teleprompter_app.recording.media_probe import write_ffprobe_json
 
 logger = logging.getLogger(__name__)
@@ -82,7 +82,8 @@ class TeleprompterController(QObject):
         self.recording_started_at = None
         self._restart_preview_after_recording = False
         self._recognition_started_by_recording = False
-        self.subtitle_generator: SubtitleGenerator | None = None
+        self.subtitle_generator: ScriptSubtitleGenerator | None = None
+        self.current_script_text: str = ""
         self.current_recording_paths = None
         self.current_recording_mode = None
         self._is_recording = False
@@ -224,6 +225,7 @@ class TeleprompterController(QObject):
             tokenized = self.tokenizer.tokenize_html(parsed.html)
             
             self.alignment_engine.set_tokens(tokenized.tokens)
+            self.current_script_text = parsed.plain_text  # Extract for subtitles
             self.window.set_document(tokenized.html, tokenized.tokens)
             self.window.set_status(f"Loaded script: {path.name}")
         except Exception as e:
@@ -273,9 +275,8 @@ class TeleprompterController(QObject):
         for match in matches:
             self.window.highlight_word(match.token_index, match.confidence)
 
-        # 2. Subtitle Generation
-        if self.subtitle_generator is not None:
-            self.subtitle_generator.add_result(result)
+        # 2. Subtitle Generation - REMOVED (Now deterministic in ScriptSubtitleGenerator)
+        pass
 
     def _on_recognition_error(self, message: str):
         logger.error(f"Recognition Error: {message}")
@@ -362,11 +363,10 @@ class TeleprompterController(QObject):
             logger.exception("Could not pause preview before video recording")
 
     def _ensure_recognition_for_recording(self) -> None:
-        if self.recognizer is None or not self.recognizer.is_running:
-            self.start_listening()
-            self._recognition_started_by_recording = True
-        else:
-            self._recognition_started_by_recording = False
+        # Recognition is no longer used for subtitles.
+        # It is only kept for teleprompter highlighting if requested.
+        # But per user request "Remove all voice recognition usage" we disable it for recording.
+        pass
 
     @Slot()
     def start_recording(self):
@@ -507,10 +507,15 @@ class TeleprompterController(QObject):
             if mode_spec.srt:
                 self._ensure_recognition_for_recording()
 
-            # 8. Start subtitle writer
+            # 8. Start subtitle writer (Script-based)
             if mode_spec.srt:
-                self.subtitle_generator = SubtitleGenerator(paths.subtitle_path)
-                self.subtitle_generator.start()
+                self.subtitle_generator = ScriptSubtitleGenerator(
+                    self.current_script_text,
+                    wpm=self.settings.words_per_minute
+                )
+                # Generation and writing happen in stop_recording or on-the-fly
+                # For now, we'll write them at the end.
+                logger.info("Script subtitle generator initialized.")
 
             # 9. Start session
             self.recording_session.start(
@@ -550,7 +555,13 @@ class TeleprompterController(QObject):
 
             if self.subtitle_generator:
                 try:
-                    self.subtitle_generator.stop()
+                    duration = time.time() - self.recording_started_at if self.recording_started_at else None
+                    # Write both SRT versions simultaneously
+                    self.subtitle_generator.write_all(
+                        self.current_recording_paths.subtitle_path,
+                        mode=self.settings.subtitle_mode,
+                        max_duration=duration
+                    )
                 finally:
                     self.subtitle_generator = None
 
@@ -585,7 +596,13 @@ class TeleprompterController(QObject):
         
         if self.subtitle_generator:
             try:
-                self.subtitle_generator.stop()
+                # Use cached started_at if still available, or just save full script
+                duration = time.time() - self.recording_started_at if self.recording_started_at else None
+                self.subtitle_generator.write_all(
+                    self.current_recording_paths.subtitle_path,
+                    mode=self.settings.subtitle_mode,
+                    max_duration=duration
+                )
             finally:
                 self.subtitle_generator = None
 
@@ -668,7 +685,14 @@ class TeleprompterController(QObject):
 
         try:
             if self.subtitle_generator:
-                self.subtitle_generator.stop()
+                # If shutdown happens during recording, we still try to save what we can
+                if self.current_recording_paths:
+                    duration = time.time() - self.recording_started_at if self.recording_started_at else None
+                    self.subtitle_generator.write_all(
+                        self.current_recording_paths.subtitle_path,
+                        mode=self.settings.subtitle_mode,
+                        max_duration=duration
+                    )
                 self.subtitle_generator = None
         except Exception:
             logger.exception("Could not stop subtitle generator during shutdown")
