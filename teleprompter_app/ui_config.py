@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from teleprompter_app.utils.config import ConfigManager, AppSettings
+from teleprompter_app.utils.config import ConfigManager, AppSettings, SubtitleTimingMode
 from teleprompter_app.system_profile import CameraProfile, SystemProfile, EncoderState
 
 logger = logging.getLogger(__name__)
@@ -342,22 +342,40 @@ class ConfigDialog(QDialog):
         self.subtitle_mode.addItem("Word-by-word (v2)", "word")
         self.subtitle_mode.addItem("Both (v1 + v2)", "both")
 
+        self.subtitle_timing_mode = QComboBox()
+        self.subtitle_timing_mode.addItem("Manual (Spoken-timed)", SubtitleTimingMode.MANUAL)
+        self.subtitle_timing_mode.addItem("Automatic (Timer-driven)", SubtitleTimingMode.AUTO)
+
         from PySide6.QtWidgets import QSpinBox
         self.words_per_minute = QSpinBox()
         self.words_per_minute.setRange(50, 400)
         self.words_per_minute.setSuffix(" WPM")
 
         self.subtitle_help = QLabel(
-            "Subtitles are generated based on the script text and reading speed.\n"
-            "This ensures 100% accuracy to your script."
+            "<b>Manual</b>: Subtitles match your actual reading speed (driven by keys/scroll).\n"
+            "<b>Automatic</b>: Subtitles advance at a fixed speed (driven by timer)."
         )
         self.subtitle_help.setWordWrap(True)
         self.subtitle_help.setStyleSheet("color: #666; font-size: 11px;")
 
+        self.subtitle_timing_mode.currentIndexChanged.connect(self._on_subtitle_timing_changed)
+
         form.addRow("Source", self.subtitle_source)
         form.addRow("Display Mode", self.subtitle_mode)
+        form.addRow("Timing Mode", self.subtitle_timing_mode)
         form.addRow("Reading Speed", self.words_per_minute)
         form.addRow(self.subtitle_help)
+
+    def _on_subtitle_timing_changed(self) -> None:
+        is_auto = self.subtitle_timing_mode.currentData() == SubtitleTimingMode.AUTO
+        self.words_per_minute.setVisible(is_auto)
+        
+        # Find the label for this row and hide it too
+        layout = self.subtitle_tab.layout()
+        if isinstance(layout, QFormLayout):
+            label = layout.labelForField(self.words_per_minute)
+            if label:
+                label.setVisible(is_auto)
 
     def _on_audio_codec_changed(self) -> None:
         codec = self.audio_codec.currentData()
@@ -628,7 +646,9 @@ class ConfigDialog(QDialog):
         # Subtitles
         self._set_combo_by_data(self.subtitle_source, self.settings.subtitle_source)
         self._set_combo_by_data(self.subtitle_mode, self.settings.subtitle_mode)
+        self._set_combo_by_data(self.subtitle_timing_mode, self.settings.subtitle_timing_mode)
         self.words_per_minute.setValue(self.settings.words_per_minute)
+        self._on_subtitle_timing_changed()
 
         self.output_dir.setText(self.settings.output_dir)
         # Preset defaults to custom since we're restoring existing settings
@@ -742,6 +762,7 @@ class ConfigDialog(QDialog):
             # Subtitles
             "subtitle_source": self.subtitle_source.currentData() or "script",
             "subtitle_mode": self.subtitle_mode.currentData() or "both",
+            "subtitle_timing_mode": self.subtitle_timing_mode.currentData() or SubtitleTimingMode.MANUAL,
             "words_per_minute": self.words_per_minute.value(),
         }
 

@@ -26,6 +26,7 @@ from teleprompter_app.recording.session_controller import (
 from teleprompter_app.recording.session_paths import create_session_paths
 from teleprompter_app.recording.script_subtitle_generator import ScriptSubtitleGenerator
 from teleprompter_app.recording.subtitle_timeline import SubtitleTimeline
+from teleprompter_app.utils.config import AppSettings, ConfigManager, SubtitleTimingMode
 from teleprompter_app.recording.media_probe import write_ffprobe_json
 
 logger = logging.getLogger(__name__)
@@ -139,6 +140,12 @@ class TeleprompterController(QObject):
         
         # Highlighter -> Timeline
         self.window.teleprompter.word_highlighted.connect(self._on_word_highlighted)
+        
+        # Manual Navigation
+        self.window.next_word_requested.connect(self._advance_to_next_word)
+        self.window.prev_word_requested.connect(self._rewind_to_prev_word)
+        self.window.next_phrase_requested.connect(self._advance_to_next_phrase)
+        self.window.prev_phrase_requested.connect(self._rewind_to_prev_phrase)
 
     def apply_settings(self, settings_dict: dict):
         self.settings = self.settings.updated(settings_dict)
@@ -390,11 +397,48 @@ class TeleprompterController(QObject):
         if not self._is_recording:
             return
         
+        # Only auto-advance if we are in AUTO mode
+        if self.settings.subtitle_timing_mode != SubtitleTimingMode.AUTO:
+            self.highlighter_timer.stop()
+            return
+
+        self._advance_to_next_word()
+
+    def _advance_to_next_word(self) -> None:
         next_index = self.current_highlight_index + 1
         if next_index < len(self.current_script_tokens):
             self.window.highlight_word(next_index)
         else:
             self.highlighter_timer.stop()
+
+    def _rewind_to_prev_word(self) -> None:
+        prev_index = self.current_highlight_index - 1
+        if prev_index >= -1:
+            self.window.highlight_word(prev_index)
+
+    def _advance_to_next_phrase(self) -> None:
+        if not self.subtitle_generator or not self.subtitle_generator.phrases:
+            return
+        
+        # Find the first word of the next phrase
+        for phrase_indices in self.subtitle_generator.phrases:
+            if phrase_indices[0] > self.current_highlight_index:
+                self.window.highlight_word(phrase_indices[0])
+                return
+
+    def _rewind_to_prev_phrase(self) -> None:
+        if not self.subtitle_generator or not self.subtitle_generator.phrases:
+            return
+            
+        # Find the first word of the previous phrase
+        for i in range(len(self.subtitle_generator.phrases) - 1, -1, -1):
+            phrase_indices = self.subtitle_generator.phrases[i]
+            if phrase_indices[0] < self.current_highlight_index:
+                self.window.highlight_word(phrase_indices[0])
+                return
+        
+        # If none found, rewind to start
+        self.window.highlight_word(-1)
 
     @Slot()
     def start_recording(self):
@@ -541,13 +585,17 @@ class TeleprompterController(QObject):
                 self.subtitle_timeline.start()
                 self.current_highlight_index = -1 # Start from beginning
                 
-                # Start the highlighter clock
-                wpm = self.settings.words_per_minute or 150
-                interval_ms = int(60000 / wpm)
-                self.highlighter_timer.start(interval_ms)
-                self._advance_highlighter() # Trigger first word immediately
+                # Only start the auto-highlighter timer if in AUTO mode
+                if self.settings.subtitle_timing_mode == SubtitleTimingMode.AUTO:
+                    wpm = self.settings.words_per_minute or 150
+                    interval_ms = int(60000 / wpm)
+                    self.highlighter_timer.start(interval_ms)
+                    self._advance_highlighter() # Trigger first word immediately
+                else:
+                    # In MANUAL mode, we still start at word 0
+                    self.window.highlight_word(0)
                 
-                logger.info("Script subtitle generator & highlighter timer started (%d WPM).", wpm)
+                logger.info("Script subtitle generator & timeline started (Mode: %s).", self.settings.subtitle_timing_mode)
 
             # 9. Start session
             self.recording_session.start(

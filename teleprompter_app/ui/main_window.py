@@ -36,6 +36,12 @@ class MainWindow(QMainWindow):
     # Emitted when the config dialog verifies encoders so the controller
     # can update its system_profile with the latest verification state.
     profile_updated = Signal(object)  # carries the updated SystemProfile
+    
+    # Manual navigation for subtitles
+    next_word_requested = Signal()
+    prev_word_requested = Signal()
+    next_phrase_requested = Signal()
+    prev_phrase_requested = Signal()
 
     def __init__(self, settings: AppSettings, system_profile: SystemProfile) -> None:
         super().__init__()
@@ -81,6 +87,27 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.start_action)
         toolbar.addAction(self.stop_action)
         toolbar.addAction(self.rewind_action)
+        
+        # Navigation actions (shortcuts only)
+        self.next_word_action = QAction("Next Word", self)
+        self.next_word_action.setShortcuts([QKeySequence(Qt.Key.Key_Right), QKeySequence(Qt.Key.Key_Space)])
+        self.next_word_action.triggered.connect(self.next_word_requested.emit)
+        self.addAction(self.next_word_action)
+        
+        self.prev_word_action = QAction("Previous Word", self)
+        self.prev_word_action.setShortcut(Qt.Key.Key_Left)
+        self.prev_word_action.triggered.connect(self.prev_word_requested.emit)
+        self.addAction(self.prev_word_action)
+        
+        self.next_phrase_action = QAction("Next Phrase", self)
+        self.next_phrase_action.setShortcut(Qt.Key.Key_PageDown)
+        self.next_phrase_action.triggered.connect(self.next_phrase_requested.emit)
+        self.addAction(self.next_phrase_action)
+        
+        self.prev_phrase_action = QAction("Previous Phrase", self)
+        self.prev_phrase_action.setShortcut(Qt.Key.Key_PageUp)
+        self.prev_phrase_action.triggered.connect(self.prev_phrase_requested.emit)
+        self.addAction(self.prev_phrase_action)
         
         # Add Main Recording & Preview Controls
         toolbar.addSeparator()

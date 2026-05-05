@@ -3,8 +3,14 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, replace
+from enum import Enum
 from pathlib import Path
 from typing import Any
+
+
+class SubtitleTimingMode(str, Enum):
+    MANUAL = "manual"  # human-driven
+    AUTO = "auto"      # timer-driven
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +76,7 @@ class AppSettings:
     # Subtitles
     subtitle_source: str = "script"  # script | voice
     subtitle_mode: str = "both"     # phrase | word | both
+    subtitle_timing_mode: SubtitleTimingMode = SubtitleTimingMode.MANUAL
     words_per_minute: int = 150
     
     # Recorder - Performance
