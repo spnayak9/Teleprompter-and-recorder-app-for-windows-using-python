@@ -22,6 +22,12 @@ from teleprompter_app.core.tokenizer import normalize_word
 
 logger = logging.getLogger(__name__)
 
+try:
+    from vosk import SetLogLevel
+    SetLogLevel(-1) # Globally suppress noisy Vosk/Kaldi internal logs
+except ImportError:
+    pass
+
 
 class Pcm16Resampler:
     """Small stateful PCM16 mono resampler for device rates that are not 16 kHz."""
@@ -127,8 +133,7 @@ class VoskSpeechRecognizer(SpeechRecognizer):
                 raise FileNotFoundError(f"Vosk model path does not exist: {model_path}")
 
             try:
-                from vosk import KaldiRecognizer, Model, SetLogLevel
-                SetLogLevel(-1) # Suppress noisy Vosk/Kaldi internal logs
+                from vosk import KaldiRecognizer, Model
             except ImportError as exc:
                 raise RuntimeError("Speech recognition requires the 'vosk' package.") from exc
 
