@@ -15,6 +15,13 @@ class SubtitleTimingMode(str, Enum):
     SPEECH_ASSISTED = "speech_assisted" # voice + keys combined
 
 
+class HighlightPreset(Enum):
+    TURBO = "turbo"
+    BALANCED = "balanced"
+    STABLE = "stable"
+    CUSTOM = "custom"
+
+
 @dataclass(frozen=True, slots=True)
 class AppSettings:
     """User-configurable application settings (Unified UI & Recorder)."""
@@ -51,6 +58,10 @@ class AppSettings:
     speech_block_size: int = 1024
     
     # High-Performance Recognition Controls
+    speech_preset: str = HighlightPreset.BALANCED.value
+    speech_model_type: str = "small" # small, large
+    speech_language: str = "en-us" # en-us, hi, en-in, etc.
+    
     speech_beam: float = 13.0
     speech_max_active: int = 7000
     speech_instant_match: bool = False

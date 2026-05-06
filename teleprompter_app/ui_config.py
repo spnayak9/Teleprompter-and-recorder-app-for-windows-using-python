@@ -412,6 +412,21 @@ class ConfigDialog(QDialog):
         self.speech_block = QComboBox()
         self.speech_block.addItems(["128", "256", "512", "1024", "2048", "4096"])
         
+        self.speech_preset = QComboBox()
+        self.speech_preset.addItems(["Balanced", "Turbo", "Stable", "Custom"])
+        self.speech_preset.currentIndexChanged.connect(self._on_speech_preset_changed)
+        
+        self.speech_language = QComboBox()
+        self.speech_language.addItem("English (US)", "en-us")
+        self.speech_language.addItem("English (India)", "en-in")
+        self.speech_language.addItem("Hindi", "hi")
+        self.speech_language.currentIndexChanged.connect(self._on_speech_language_changed)
+
+        self.speech_model_type = QComboBox()
+        self.speech_model_type.addItem("Small (Fastest)", "small")
+        self.speech_model_type.addItem("Large (Accurate)", "large")
+        self.speech_model_type.currentIndexChanged.connect(self._on_speech_preset_changed) # Re-eval defaults
+        
         self.speech_instant = QCheckBox("Instant Match (No Debounce)")
         self.speech_beam = QDoubleSpinBox()
         self.speech_beam.setRange(1.0, 30.0)
@@ -430,6 +445,9 @@ class ConfigDialog(QDialog):
         speech_form.addRow("Speech Debounce", self.speech_debounce)
         speech_form.addRow("Search Window", self.speech_window)
         speech_form.addRow("Fuzzy Threshold", self.speech_fuzzy)
+        speech_form.addRow("Recognition Preset", self.speech_preset)
+        speech_form.addRow("Language", self.speech_language)
+        speech_form.addRow("Model Size", self.speech_model_type)
         speech_form.addRow("Filler Words", self.speech_fillers)
         speech_form.addRow("Input Sample Rate", self.speech_rate)
         speech_form.addRow("Audio Chunk Size", self.speech_block)
@@ -712,6 +730,44 @@ class ConfigDialog(QDialog):
                         self.speech_rate.setCurrentIndex(ridx)
                         break
 
+    def _on_speech_preset_changed(self) -> None:
+        preset = self.speech_preset.currentText().lower()
+        model = self.speech_model_type.currentData()
+        
+        if preset == "custom":
+            return
+            
+        # Optimization logic: Small models can handle tighter beams
+        is_small = (model == "small")
+        
+        if preset == "turbo":
+            self.speech_beam.setValue(8.0 if is_small else 10.0)
+            self.speech_max_active.setValue(3000 if is_small else 4000)
+            self.speech_instant.setChecked(True)
+            self.speech_match_min.setValue(1)
+            self.speech_lookahead.setValue(40)
+        elif preset == "balanced":
+            self.speech_beam.setValue(13.0 if is_small else 15.0)
+            self.speech_max_active.setValue(7000)
+            self.speech_instant.setChecked(False)
+            self.speech_match_min.setValue(1)
+            self.speech_lookahead.setValue(20)
+        elif preset == "stable":
+            self.speech_beam.setValue(18.0 if is_small else 20.0)
+            self.speech_max_active.setValue(10000)
+            self.speech_instant.setChecked(False)
+            self.speech_match_min.setValue(2)
+            self.speech_lookahead.setValue(15)
+
+    def _on_speech_language_changed(self) -> None:
+        lang = self.speech_language.currentData()
+        fillers = {
+            "en-us": "[um], [uh], the, a, and, or, of, an",
+            "en-in": "[um], [uh], the, a, and, or, of, an",
+            "hi": "[um], [uh], और, का, के, की, में, से"
+        }
+        self.speech_fillers.setText(fillers.get(lang, fillers["en-us"]))
+
     def _on_audio_device_changed(self) -> None:
         mic_name = self.audio_device.currentData()
         if not mic_name:
@@ -805,6 +861,10 @@ class ConfigDialog(QDialog):
         self.speech_fillers.setText(self.settings.speech_filler_words)
         self._set_combo_by_data(self.speech_rate, str(self.settings.speech_sample_rate))
         self._set_combo_by_data(self.speech_block, str(self.settings.speech_block_size))
+        
+        self.speech_preset.setCurrentText(self.settings.speech_preset.capitalize())
+        self._set_combo_by_data(self.speech_language, self.settings.speech_language)
+        self._set_combo_by_data(self.speech_model_type, self.settings.speech_model_type)
         
         self.speech_instant.setChecked(self.settings.speech_instant_match)
         self.speech_beam.setValue(self.settings.speech_beam)
@@ -944,6 +1004,10 @@ class ConfigDialog(QDialog):
             "speech_filler_words": self.speech_fillers.text().strip(),
             "speech_sample_rate": int(self.speech_rate.currentText() or 16000),
             "speech_block_size": int(self.speech_block.currentText() or 1024),
+            
+            "speech_preset": self.speech_preset.currentText().lower(),
+            "speech_language": self.speech_language.currentData() or "en-us",
+            "speech_model_type": self.speech_model_type.currentData() or "small",
             
             "speech_instant_match": self.speech_instant.isChecked(),
             "speech_beam": self.speech_beam.value(),

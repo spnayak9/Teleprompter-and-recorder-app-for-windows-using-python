@@ -236,10 +236,8 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         return RecognitionResult(text=text, words=words, is_final=is_final)
 
     def _create_recognizer(self, recognizer_class, model):  # noqa: ANN001
-        # Vosk KaldiRecognizer can take a JSON config string as the third param if it's NOT a list.
-        # But we also want to support grammar.
-        # If we have grammar, we pass the list.
-        # If we don't have grammar, we can pass the JSON config for beam/max_active.
+        # Vosk KaldiRecognizer constructor is sensitive to the 3rd argument.
+        # If the model has HCLr.fst (small models), it MUST be a JSON list of words or None.
         
         if self._uses_runtime_grammar():
             try:
@@ -247,12 +245,19 @@ class VoskSpeechRecognizer(SpeechRecognizer):
             except Exception:
                 logger.exception("Could not create Vosk grammar recognizer; falling back to full model")
 
-        # Fallback or Full Model: use JSON config for performance
-        config = {
-            "beam": self.beam,
-            "max_active": self.max_active,
-        }
-        return recognizer_class(model, self.sample_rate, json.dumps(config))
+        # Standard creation for full models or fallback
+        rec = recognizer_class(model, self.sample_rate)
+        
+        # Try to apply performance parameters if the recognizer supports it (post-init)
+        # This is safer than the constructor and prevents crashes on small models
+        try:
+            if hasattr(rec, "SetParams"):
+                config = {"config": {"beam": self.beam, "max_active": self.max_active}}
+                rec.SetParams(json.dumps(config))
+        except Exception:
+            pass
+            
+        return rec
 
     def _model_status_message(self) -> str:
         size_mb = self._model_size_mb()
