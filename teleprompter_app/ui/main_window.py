@@ -90,29 +90,40 @@ class MainWindow(QMainWindow):
         
         # Navigation actions (shortcuts only)
         self.next_word_action = QAction("Next Word", self)
-        self.next_word_action.setShortcuts([QKeySequence(Qt.Key.Key_Right), QKeySequence(Qt.Key.Key_Space)])
+        self._apply_shortcut(self.next_word_action, self.settings.shortcut_next_word, [Qt.Key.Key_Right, Qt.Key.Key_Space])
         self.next_word_action.triggered.connect(self.next_word_requested.emit)
         self.addAction(self.next_word_action)
         
         self.prev_word_action = QAction("Previous Word", self)
-        self.prev_word_action.setShortcut(Qt.Key.Key_Left)
+        self._apply_shortcut(self.prev_word_action, self.settings.shortcut_prev_word, [Qt.Key.Key_Left])
         self.prev_word_action.triggered.connect(self.prev_word_requested.emit)
         self.addAction(self.prev_word_action)
         
         self.next_phrase_action = QAction("Next Phrase", self)
-        self.next_phrase_action.setShortcut(Qt.Key.Key_PageDown)
+        self._apply_shortcut(self.next_phrase_action, self.settings.shortcut_next_phrase, [Qt.Key.Key_PageDown])
         self.next_phrase_action.triggered.connect(self.next_phrase_requested.emit)
         self.addAction(self.next_phrase_action)
         
         self.prev_phrase_action = QAction("Previous Phrase", self)
-        self.prev_phrase_action.setShortcut(Qt.Key.Key_PageUp)
+        self._apply_shortcut(self.prev_phrase_action, self.settings.shortcut_prev_phrase, [Qt.Key.Key_PageUp])
         self.prev_phrase_action.triggered.connect(self.prev_phrase_requested.emit)
         self.addAction(self.prev_phrase_action)
         
-        # Add Main Recording & Preview Controls
         toolbar.addSeparator()
         self.main_controls = MainToolbarControls(self)
         toolbar.addWidget(self.main_controls)
+
+    def _apply_shortcut(self, action: QAction, shortcut_str: str, defaults: list) -> None:
+        if not shortcut_str:
+            action.setShortcuts([QKeySequence(d) for d in defaults])
+            return
+        
+        parts = [p.strip() for p in shortcut_str.split(",") if p.strip()]
+        if not parts:
+            action.setShortcuts([QKeySequence(d) for d in defaults])
+            return
+            
+        action.setShortcuts([QKeySequence(p) for p in parts])
 
     def _connect_signals(self) -> None:
         self.open_action.triggered.connect(lambda _checked=False: self._choose_script())
@@ -159,6 +170,12 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.settings_panel.apply_settings(settings)
         self.teleprompter.apply_settings(settings)
+        
+        # Update shortcuts
+        self._apply_shortcut(self.next_word_action, settings.shortcut_next_word, [Qt.Key.Key_Right, Qt.Key.Key_Space])
+        self._apply_shortcut(self.prev_word_action, settings.shortcut_prev_word, [Qt.Key.Key_Left])
+        self._apply_shortcut(self.next_phrase_action, settings.shortcut_next_phrase, [Qt.Key.Key_PageDown])
+        self._apply_shortcut(self.prev_phrase_action, settings.shortcut_prev_phrase, [Qt.Key.Key_PageUp])
 
     def set_microphones(self, devices: list[MicrophoneDevice], selected_index: int | None) -> None:
         self.settings_panel.set_microphones(devices, selected_index)

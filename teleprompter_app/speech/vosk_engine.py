@@ -63,8 +63,8 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         self.model_path = Path(model_path).expanduser().resolve()
         self.device_index = device_index
         self.sample_rate = sample_rate
-        min_block = max(320, sample_rate // 50)
-        max_block = max(min_block, sample_rate // 20)
+        min_block = 128
+        max_block = max(min_block, sample_rate // 10)
         self.block_size = max(min_block, min(block_size, max_block))
         self.grammar = grammar or []
         self._stop_event = Event()

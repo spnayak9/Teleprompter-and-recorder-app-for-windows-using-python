@@ -146,6 +146,9 @@ class TeleprompterController(QObject):
         self.window.prev_word_requested.connect(self._rewind_to_prev_word)
         self.window.next_phrase_requested.connect(self._advance_to_next_phrase)
         self.window.prev_phrase_requested.connect(self._rewind_to_prev_phrase)
+        
+        # Internal state for speech debouncing
+        self._last_speech_highlight_time = 0.0
 
     def apply_settings(self, settings_dict: dict):
         self.settings = self.settings.updated(settings_dict)
@@ -252,7 +255,7 @@ class TeleprompterController(QObject):
             QMessageBox.critical(self.window, "Error", f"Failed to load script: {e}")
 
     @Slot()
-    def start_listening(self):
+    def start_listening(self, grammar: list[str] | None = None):
         if self.recognizer and self.recognizer.is_running:
             return
             
@@ -261,10 +264,17 @@ class TeleprompterController(QObject):
             return
 
         try:
+            # Use the dedicated highlighting microphone if selected, otherwise fallback
+            mic_index = self.settings.highlight_microphone_index
+            if mic_index == -1:
+                mic_index = self.settings.microphone_index
+                
             self.recognizer = VoskSpeechRecognizer(
                 model_path=self.settings.vosk_model_path,
-                device_index=self.settings.microphone_index,
-                sample_rate=self.settings.sample_rate,
+                device_index=mic_index,
+                sample_rate=self.settings.speech_sample_rate or self.settings.sample_rate,
+                block_size=self.settings.speech_block_size or self.settings.audio_block_size,
+                grammar=grammar,
             )
             self.recognizer.start(
                 on_result=self.recognition_bridge.on_result,
@@ -286,18 +296,70 @@ class TeleprompterController(QObject):
     @Slot()
     def rewind_script(self):
         self.alignment_engine.reset()
+        self.current_highlight_index = -1
         self.window.highlight_word(-1)
 
     def _on_recognition_result(self, result: RecognitionResult):
-        # 1. Highlighting / Alignment
-        matches = self.alignment_engine.align_words(result.words)
-        for match in matches:
-            self.window.highlight_word(match.token_index, match.confidence)
+        # Only process if timing mode allows speech influence
+        if self.settings.subtitle_timing_mode not in (SubtitleTimingMode.SPEECH, SubtitleTimingMode.SPEECH_ASSISTED):
+            return
 
-        # 2. Subtitles - SPEECH mode logic
-        # In SPEECH timing mode, recognition matches drive the highlighter progression
-        # which in turn records into the subtitle timeline.
-        pass
+        # 0. Respect partial matching preference
+        if not self.settings.speech_partial_matching and not result.is_final:
+            return
+
+        # 1. Highlighting / Alignment Logic
+        now = time.monotonic()
+        debounce_sec = (self.settings.speech_debounce_ms or 300) / 1000.0
+        if now - self._last_speech_highlight_time < debounce_sec:
+            return
+
+        # Search in window ahead of current cursor
+        start_idx = max(0, self.current_highlight_index)
+        window = self.settings.speech_window_size or 15
+        
+        # Fuzzy threshold mapping: UI 0-5 -> score 90 down to 60
+        threshold = 90 - (min(5, self.settings.speech_fuzzy_threshold) * 6)
+        
+        matches = self.alignment_engine.align_in_window(
+            result.words,
+            start_index=start_idx,
+            window_size=window,
+            fuzzy_threshold=threshold
+        )
+        
+        if matches:
+            latest_match = matches[-1]
+            if latest_match.token_index >= self.current_highlight_index:
+                self._last_speech_highlight_time = now
+                self._move_highlight(latest_match.token_index, source="speech")
+
+    def _move_highlight(self, index: int, source: str) -> None:
+        """Central authoritative dispatcher for all highlight changes."""
+        if index == self.current_highlight_index and index != -1:
+            return
+            
+        # Permission logic:
+        # 1. Manual/Keys are ALWAYS allowed for user control, unless in AUTO mode during recording
+        #    (to prevent interference). Actually, let's allow it even in AUTO for emergency override.
+        
+        mode = self.settings.subtitle_timing_mode
+        
+        if source in ("keys", "manual"):
+            # Always allowed
+            pass
+        elif source == "timer":
+            if mode != SubtitleTimingMode.AUTO:
+                return
+        elif source == "speech":
+            if mode not in (SubtitleTimingMode.SPEECH, SubtitleTimingMode.SPEECH_ASSISTED):
+                return
+        else:
+            # Unknown source
+            return
+
+        # Update UI - this will trigger _on_word_highlighted via signal
+        self.window.highlight_word(index)
 
     def _on_recognition_error(self, message: str):
         logger.error(f"Recognition Error: {message}")
@@ -384,14 +446,26 @@ class TeleprompterController(QObject):
             logger.exception("Could not pause preview before video recording")
 
     def _ensure_recognition_for_recording(self) -> None:
-        if not self.vosk_bridge.is_listening():
+        if self.recognizer is None or not self.recognizer.is_running:
             self._recognition_started_by_recording = True
-            self.start_listening()
+            
+            # Optimization: Use script grammar to reduce latency on low-end CPUs (Ryzen 3)
+            grammar = []
+            if self.current_script_text:
+                import re
+                words = re.findall(r"[a-z0-9']+", self.current_script_text.lower())
+                grammar = sorted(list(set(words)))
+                grammar.extend(["[um]", "[uh]", "the", "a", "and"])
+            
+            if grammar:
+                logger.info("Starting recognition with script-based grammar (%d words).", len(grammar))
+            
+            self.start_listening(grammar=grammar)
 
     def _on_word_highlighted(self, index: int) -> None:
+        self.current_highlight_index = index
         if self._is_recording and self.subtitle_timeline:
             self.subtitle_timeline.record_highlight(index)
-            self.current_highlight_index = index
 
     def _advance_highlighter(self) -> None:
         if not self._is_recording:
@@ -407,14 +481,14 @@ class TeleprompterController(QObject):
     def _advance_to_next_word(self) -> None:
         next_index = self.current_highlight_index + 1
         if next_index < len(self.current_script_tokens):
-            self.window.highlight_word(next_index)
+            self._move_highlight(next_index, source="keys")
         else:
             self.highlighter_timer.stop()
 
     def _rewind_to_prev_word(self) -> None:
         prev_index = self.current_highlight_index - 1
         if prev_index >= -1:
-            self.window.highlight_word(prev_index)
+            self._move_highlight(prev_index, source="keys")
 
     def _advance_to_next_phrase(self) -> None:
         if not self.subtitle_generator or not self.subtitle_generator.phrases:
@@ -423,7 +497,7 @@ class TeleprompterController(QObject):
         # Find the first word of the next phrase
         for phrase_indices in self.subtitle_generator.phrases:
             if phrase_indices[0] > self.current_highlight_index:
-                self.window.highlight_word(phrase_indices[0])
+                self._move_highlight(phrase_indices[0], source="keys")
                 return
 
     def _rewind_to_prev_phrase(self) -> None:
@@ -434,11 +508,11 @@ class TeleprompterController(QObject):
         for i in range(len(self.subtitle_generator.phrases) - 1, -1, -1):
             phrase_indices = self.subtitle_generator.phrases[i]
             if phrase_indices[0] < self.current_highlight_index:
-                self.window.highlight_word(phrase_indices[0])
+                self._move_highlight(phrase_indices[0], source="keys")
                 return
         
         # If none found, rewind to start
-        self.window.highlight_word(-1)
+        self._move_highlight(-1, source="keys")
 
     @Slot()
     def start_recording(self):
@@ -588,18 +662,23 @@ class TeleprompterController(QObject):
                     tokens=self.current_script_tokens
                 )
                 self.subtitle_timeline.start()
-                self.current_highlight_index = -1 # Start from beginning
-                
-                # Always record an initial anchor at T=0
+                # Start at current position or 0
                 start_idx = max(0, self.window.teleprompter.current_index)
+                self.current_highlight_index = start_idx
+                
+                # IMPORTANT: Setting _is_recording (above) ensures this highlight is captured at T=0
                 self.window.highlight_word(start_idx)
-                self.subtitle_timeline.record_highlight(start_idx)
+
                 
                 # If in AUTO mode, start the highlighter clock
                 if self.settings.subtitle_timing_mode == SubtitleTimingMode.AUTO:
                     wpm = self.settings.words_per_minute or 150
                     interval_ms = int(60000 / wpm)
                     self.highlighter_timer.start(interval_ms)
+                
+                # If in SPEECH or SPEECH_ASSISTED, ensure ASR is ready with grammar
+                if self.settings.subtitle_timing_mode in (SubtitleTimingMode.SPEECH, SubtitleTimingMode.SPEECH_ASSISTED):
+                    self._ensure_recognition_for_recording()
                 
                 logger.info("Script subtitle generator & timeline started (Mode: %s).", self.settings.subtitle_timing_mode)
 

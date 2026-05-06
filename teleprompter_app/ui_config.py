@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal, Slot
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -25,6 +26,38 @@ from teleprompter_app.utils.config import ConfigManager, AppSettings, SubtitleTi
 from teleprompter_app.system_profile import CameraProfile, SystemProfile, EncoderState
 
 logger = logging.getLogger(__name__)
+
+
+class ShortcutLineEdit(QLineEdit):
+    """A line edit that records the next key sequence pressed."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setPlaceholderText("Press any key...")
+        self.setReadOnly(True)
+        self.setClearButtonEnabled(True)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        # Ignore modifier-only presses
+        if key in (Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Alt, Qt.Key.Key_Meta):
+            return
+
+        # Use QKeySequence to get a standard string representation
+        try:
+            seq = QKeySequence(event.keyCombination())
+        except AttributeError:
+            # Fallback for older versions if needed
+            modifiers = event.modifiers()
+            seq = QKeySequence(modifiers | key)
+
+        self.setText(seq.toString())
+        self.clearFocus()
+        event.accept()
+
+    def mousePressEvent(self, event):
+        self.setFocus()
+        super().mousePressEvent(event)
 
 
 # ---------------------------------------------------------------------------
@@ -146,15 +179,18 @@ class ConfigDialog(QDialog):
 
         self.preview_camera = QComboBox()
         self.audio_device = QComboBox()
+        self.highlight_mic = QComboBox()
 
         form.addRow("Recording Camera", self.recording_camera)
         form.addRow("Preview Background", self.preview_background_mode)
         form.addRow("Preview Camera", self.preview_camera)
-        form.addRow("Microphone", self.audio_device)
+        form.addRow("Recording Microphone", self.audio_device)
+        form.addRow("Highlight Microphone", self.highlight_mic)
 
         self.recording_camera.currentIndexChanged.connect(self._on_camera_changed)
         self.preview_background_mode.currentIndexChanged.connect(self._on_preview_background_changed)
         self.audio_device.currentIndexChanged.connect(self._on_audio_device_changed)
+        self.highlight_mic.currentIndexChanged.connect(self._on_highlight_mic_changed)
         self._on_preview_background_changed()
 
     def _on_preview_background_changed(self) -> None:
@@ -345,17 +381,49 @@ class ConfigDialog(QDialog):
         self.subtitle_timing_mode = QComboBox()
         self.subtitle_timing_mode.addItem("Manual (Space/Arrows)", SubtitleTimingMode.MANUAL)
         self.subtitle_timing_mode.addItem("Automatic (Fixed WPM)", SubtitleTimingMode.AUTO)
-        self.subtitle_timing_mode.addItem("Voice-driven (Follows you)", SubtitleTimingMode.SPEECH)
+        self.subtitle_timing_mode.addItem("Voice-driven (AI Follow)", SubtitleTimingMode.SPEECH)
+        self.subtitle_timing_mode.addItem("Speech-Assisted (Voice + Keys)", SubtitleTimingMode.SPEECH_ASSISTED)
 
         from PySide6.QtWidgets import QSpinBox
         self.words_per_minute = QSpinBox()
         self.words_per_minute.setRange(50, 400)
         self.words_per_minute.setSuffix(" WPM")
 
+        # --- Speech Controls ---
+        self.speech_group = QGroupBox("Voice Highlighting Settings")
+        speech_form = QFormLayout(self.speech_group)
+        
+        self.speech_partial = QCheckBox("Enable Partial Matching (Real-time)")
+        self.speech_grammar = QCheckBox("Grammar Constrained to Script (Faster)")
+        self.speech_debounce = QSpinBox()
+        self.speech_debounce.setRange(50, 2000)
+        self.speech_debounce.setSuffix(" ms")
+        self.speech_window = QSpinBox()
+        self.speech_window.setRange(2, 100)
+        self.speech_window.setSuffix(" words")
+        self.speech_fuzzy = QSpinBox()
+        self.speech_fuzzy.setRange(0, 5)
+        self.speech_fillers = QLineEdit()
+        self.speech_rate = QComboBox()
+        # Initial defaults, will be filtered by _on_highlight_mic_changed
+        self.speech_rate.addItems(["8000", "11025", "16000", "22050", "32000", "44100", "48000"])
+        self.speech_block = QComboBox()
+        self.speech_block.addItems(["128", "256", "512", "1024", "2048", "4096"])
+
+        speech_form.addRow(self.speech_partial)
+        speech_form.addRow(self.speech_grammar)
+        speech_form.addRow("Speech Debounce", self.speech_debounce)
+        speech_form.addRow("Search Window", self.speech_window)
+        speech_form.addRow("Fuzzy Threshold", self.speech_fuzzy)
+        speech_form.addRow("Filler Words", self.speech_fillers)
+        speech_form.addRow("Input Sample Rate", self.speech_rate)
+        speech_form.addRow("Audio Chunk Size", self.speech_block)
+
         self.subtitle_help = QLabel(
             "<b>Manual</b>: Highlights follow your keys.<br/>"
             "<b>Automatic</b>: Highlights follow a timer.<br/>"
-            "<b>Voice-driven</b>: Highlights follow your voice (AI)."
+            "<b>Voice-driven</b>: Highlights follow your voice (AI).<br/>"
+            "<b>Speech-Assisted</b>: Voice moves forward; keys can override/correct."
         )
         self.subtitle_help.setWordWrap(True)
         self.subtitle_help.setStyleSheet("color: #666; font-size: 11px;")
@@ -366,18 +434,38 @@ class ConfigDialog(QDialog):
         form.addRow("Display Mode", self.subtitle_mode)
         form.addRow("Timing Mode", self.subtitle_timing_mode)
         form.addRow("Reading Speed", self.words_per_minute)
+        
+        # --- Shortcuts ---
+        self.shortcut_group = QGroupBox("Navigation Shortcuts")
+        short_form = QFormLayout(self.shortcut_group)
+        self.short_next_word = ShortcutLineEdit()
+        self.short_prev_word = ShortcutLineEdit()
+        self.short_next_phrase = ShortcutLineEdit()
+        self.short_prev_phrase = ShortcutLineEdit()
+        short_form.addRow("Next Word", self.short_next_word)
+        short_form.addRow("Previous Word", self.short_prev_word)
+        short_form.addRow("Next Phrase", self.short_next_phrase)
+        short_form.addRow("Previous Phrase", self.short_prev_phrase)
+
+        form.addRow(self.speech_group)
+        form.addRow(self.shortcut_group)
         form.addRow(self.subtitle_help)
 
     def _on_subtitle_timing_changed(self) -> None:
-        is_auto = self.subtitle_timing_mode.currentData() == SubtitleTimingMode.AUTO
-        self.words_per_minute.setVisible(is_auto)
+        mode = self.subtitle_timing_mode.currentData()
+        is_auto = mode == SubtitleTimingMode.AUTO
+        is_speech = mode in (SubtitleTimingMode.SPEECH, SubtitleTimingMode.SPEECH_ASSISTED)
         
-        # Find the label for this row and hide it too
+        self.words_per_minute.setVisible(is_auto)
+        self.speech_group.setVisible(is_speech)
+        
+        # Hide labels as well
         layout = self.subtitle_tab.layout()
         if isinstance(layout, QFormLayout):
-            label = layout.labelForField(self.words_per_minute)
-            if label:
-                label.setVisible(is_auto)
+            for field in [self.words_per_minute, self.speech_group]:
+                label = layout.labelForField(field)
+                if label:
+                    label.setVisible(field.isVisible())
 
     def _on_audio_codec_changed(self) -> None:
         codec = self.audio_codec.currentData()
@@ -420,9 +508,13 @@ class ConfigDialog(QDialog):
 
         for mic in self.system_profile.audio_inputs:
             self.audio_device.addItem(mic.name, mic.ffmpeg_name)
+            self.highlight_mic.addItem(mic.name, mic.device_index)
 
         if self.audio_device.count() > 0:
             self._on_audio_device_changed()
+        
+        if self.highlight_mic.count() > 0:
+            self._on_highlight_mic_changed()
 
         # Hardware encoders — run lazy verification for any UNSUPPORTED entries
         unsupported = [
@@ -568,6 +660,38 @@ class ConfigDialog(QDialog):
                     {"format_name": fmt_name, "format_kind": fmt_kind},
                 )
 
+    def _on_highlight_mic_changed(self) -> None:
+        device_index = self.highlight_mic.currentData()
+        if device_index is None:
+            return
+
+        mic = next((a for a in self.system_profile.audio_inputs if a.device_index == device_index), None)
+        if not mic or not mic.formats:
+            return
+
+        with QSignalBlocker(self.speech_rate):
+            prev_rate = self.speech_rate.currentText()
+            self.speech_rate.clear()
+            
+            # Extract rates from mic.formats (channels, bits, rate)
+            rates = sorted(list(set(f[2] for f in mic.formats)))
+            
+            # Vosk works best at 16k, but we allow user choice
+            for rate in rates:
+                self.speech_rate.addItem(str(rate))
+            
+            # Restore previous if still valid
+            idx = self.speech_rate.findText(prev_rate)
+            if idx >= 0:
+                self.speech_rate.setCurrentIndex(idx)
+            else:
+                # Default to 16000 or 11025 or 8000 for efficiency
+                for r in ["16000", "11025", "8000"]:
+                    ridx = self.speech_rate.findText(r)
+                    if ridx >= 0:
+                        self.speech_rate.setCurrentIndex(ridx)
+                        break
+
     def _on_audio_device_changed(self) -> None:
         mic_name = self.audio_device.currentData()
         if not mic_name:
@@ -650,8 +774,25 @@ class ConfigDialog(QDialog):
         self._set_combo_by_data(self.subtitle_mode, self.settings.subtitle_mode)
         self._set_combo_by_data(self.subtitle_timing_mode, self.settings.subtitle_timing_mode)
         self.words_per_minute.setValue(self.settings.words_per_minute)
+        
+        # Speech Controls
+        self._set_combo_by_data(self.highlight_mic, self.settings.highlight_microphone_index)
+        self.speech_debounce.setValue(self.settings.speech_debounce_ms)
+        self.speech_window.setValue(self.settings.speech_window_size)
+        self.speech_fuzzy.setValue(self.settings.speech_fuzzy_threshold)
+        self.speech_partial.setChecked(self.settings.speech_partial_matching)
+        self.speech_grammar.setChecked(self.settings.speech_grammar_enabled)
+        self.speech_fillers.setText(self.settings.speech_filler_words)
+        self._set_combo_by_data(self.speech_rate, str(self.settings.speech_sample_rate))
+        self._set_combo_by_data(self.speech_block, str(self.settings.speech_block_size))
+        
+        # Shortcuts
+        self.short_next_word.setText(self.settings.shortcut_next_word)
+        self.short_prev_word.setText(self.settings.shortcut_prev_word)
+        self.short_next_phrase.setText(self.settings.shortcut_next_phrase)
+        self.short_prev_phrase.setText(self.settings.shortcut_prev_phrase)
+        
         self._on_subtitle_timing_changed()
-
         self.output_dir.setText(self.settings.output_dir)
         # Preset defaults to custom since we're restoring existing settings
         self._set_combo_by_data(self.preset_combo, "custom")
@@ -766,6 +907,23 @@ class ConfigDialog(QDialog):
             "subtitle_mode": self.subtitle_mode.currentData() or "both",
             "subtitle_timing_mode": self.subtitle_timing_mode.currentData() or SubtitleTimingMode.MANUAL,
             "words_per_minute": self.words_per_minute.value(),
+            
+            # Speech Highlighting
+            "highlight_microphone_index": self.highlight_mic.currentData() if self.highlight_mic.currentData() is not None else -1,
+            "speech_debounce_ms": self.speech_debounce.value(),
+            "speech_window_size": self.speech_window.value(),
+            "speech_fuzzy_threshold": self.speech_fuzzy.value(),
+            "speech_partial_matching": self.speech_partial.isChecked(),
+            "speech_grammar_enabled": self.speech_grammar.isChecked(),
+            "speech_filler_words": self.speech_fillers.text().strip(),
+            "speech_sample_rate": int(self.speech_rate.currentText() or 16000),
+            "speech_block_size": int(self.speech_block.currentText() or 1024),
+
+            # Shortcuts
+            "shortcut_next_word": self.short_next_word.text().strip(),
+            "shortcut_prev_word": self.short_prev_word.text().strip(),
+            "shortcut_next_phrase": self.short_next_phrase.text().strip(),
+            "shortcut_prev_phrase": self.short_prev_phrase.text().strip(),
         }
 
         settings = current.updated(updates)

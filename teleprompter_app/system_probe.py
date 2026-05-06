@@ -6,6 +6,7 @@ import subprocess
 
 from pathlib import Path
 from teleprompter_app.camera_mapper import detect_opencv_cameras
+from teleprompter_app.audio.mic_manager import MicrophoneManager
 from teleprompter_app.recording.encoder_probe import probe_detected_encoders
 from teleprompter_app.system_profile import (
     AudioProfile,
@@ -374,10 +375,28 @@ def probe_system(ffmpeg_path: str = "ffmpeg") -> SystemProfile:
         for d in encoder_dicts
     )
 
+    # Discover PyAudio devices once to match with FFmpeg names
+    mic_manager = MicrophoneManager()
+    pyaudio_devices = mic_manager.list_input_devices()
+
     audio_inputs = []
     for name in ffmpeg_audio_devices:
         audio_formats = _ffmpeg_list_audio_modes(ffmpeg_path, name)
-        audio_inputs.append(AudioProfile(name=name, ffmpeg_name=name, formats=audio_formats))
+        
+        # Try to find matching PyAudio index
+        device_index = -1
+        # Simple name matching (case-insensitive)
+        for pa_mic in pyaudio_devices:
+            if pa_mic.name.lower() == name.lower():
+                device_index = pa_mic.index
+                break
+        
+        audio_inputs.append(AudioProfile(
+            name=name, 
+            ffmpeg_name=name, 
+            device_index=device_index,
+            formats=audio_formats
+        ))
 
     profile = SystemProfile(
         cameras=tuple(cameras),

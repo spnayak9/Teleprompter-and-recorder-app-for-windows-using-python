@@ -29,6 +29,7 @@ class CameraProfile:
 class AudioProfile:
     name: str
     ffmpeg_name: str
+    device_index: int = -1  # Index for PyAudio/PortAudio
     # formats: tuple of (channels, bits, sample_rate)
     formats: tuple[tuple[int, int, int], ...] = field(default_factory=tuple)
 
@@ -237,7 +238,7 @@ class SystemProfile:
                 for cam in self.cameras
             ],
             "audio_inputs": [
-                {"name": a.name, "ffmpeg_name": a.ffmpeg_name}
+                {"name": a.name, "ffmpeg_name": a.ffmpeg_name, "device_index": a.device_index}
                 for a in self.audio_inputs
             ],
             "video_codecs": list(self.video_codecs),

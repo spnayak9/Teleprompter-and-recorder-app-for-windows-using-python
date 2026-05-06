@@ -71,6 +71,60 @@ class AlignmentEngine:
         self.pending_spoken = []
         self.miss_count = 0
 
+    def align_in_window(
+        self, 
+        spoken_words: Iterable[RecognizedWord | str], 
+        start_index: int, 
+        window_size: int,
+        fuzzy_threshold: float | None = None
+    ) -> list[AlignmentMatch]:
+        """Align spoken words within a strict window forward from start_index."""
+        matches: list[AlignmentMatch] = []
+        current_search_start = start_index
+        threshold = fuzzy_threshold if fuzzy_threshold is not None else self.threshold
+
+        for item in spoken_words:
+            if isinstance(item, RecognizedWord):
+                spoken = item.word
+                confidence = item.confidence
+            else:
+                spoken = item
+                confidence = None
+
+            normalized = normalize_word(spoken)
+            if not normalized or normalized in FILLER_WORDS:
+                continue
+
+            # Search in window [current_search_start, start_index + window_size]
+            search_end = min(len(self.tokens), start_index + window_size)
+            best_match: AlignmentMatch | None = None
+            
+            for i in range(current_search_start, search_end):
+                token = self.tokens[i]
+                score = self._word_score(normalized, token.normalized)
+                
+                # Check for prefix match or fuzzy match
+                is_match = False
+                if normalized == token.normalized:
+                    is_match = True
+                elif token.normalized.startswith(normalized) and len(normalized) >= 3:
+                    is_match = True
+                    score = max(score, 90.0) # Bonus for prefix
+                elif score >= threshold:
+                    is_match = True
+                
+                if is_match:
+                    match = AlignmentMatch(i, spoken, token.text, score, confidence)
+                    if best_match is None or score > best_match.score:
+                        best_match = match
+            
+            if best_match:
+                matches.append(best_match)
+                # Move search pointer forward for next word in result
+                current_search_start = best_match.token_index + 1
+                
+        return matches
+
     def align_words(self, spoken_words: Iterable[RecognizedWord | str]) -> list[AlignmentMatch]:
         matches: list[AlignmentMatch] = []
         for item in spoken_words:

@@ -12,6 +12,7 @@ class SubtitleTimingMode(str, Enum):
     MANUAL = "manual"   # human-driven (keys)
     AUTO = "auto"       # timer-driven (WPM)
     SPEECH = "speech"   # voice-driven (alignment)
+    SPEECH_ASSISTED = "speech_assisted" # voice + keys combined
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,10 +33,28 @@ class AppSettings:
     background_color: str = "#000000"
 
     # Recognition
-    microphone_index: int = -1
+    # Recognition (Highlighter)
+    microphone_index: int = -1  # Legacy: used for default speech if highlight_microphone_index is -1
     vosk_model_path: str = os.environ.get("VOSK_MODEL_PATH", "models/vosk-model-small-en-us-0.15")
     sample_rate: int = 16000
-    audio_block_size: int = 800
+    audio_block_size: int = 1024
+    
+    # Speech-Driven Highlighting
+    highlight_microphone_index: int = -1
+    speech_debounce_ms: int = 300
+    speech_window_size: int = 15
+    speech_fuzzy_threshold: int = 2
+    speech_partial_matching: bool = True
+    speech_grammar_enabled: bool = True
+    speech_filler_words: str = "[um], [uh], the, a, and"
+    speech_sample_rate: int = 16000
+    speech_block_size: int = 1024
+    
+    # Shortcuts
+    shortcut_next_word: str = "Right,Space"
+    shortcut_prev_word: str = "Left"
+    shortcut_next_phrase: str = "PageDown"
+    shortcut_prev_phrase: str = "PageUp"
 
     # Recorder - Devices
     video_device: str = ""
