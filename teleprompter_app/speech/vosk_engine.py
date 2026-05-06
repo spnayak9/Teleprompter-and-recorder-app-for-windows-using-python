@@ -127,7 +127,8 @@ class VoskSpeechRecognizer(SpeechRecognizer):
                 raise FileNotFoundError(f"Vosk model path does not exist: {model_path}")
 
             try:
-                from vosk import KaldiRecognizer, Model
+                from vosk import KaldiRecognizer, Model, SetLogLevel
+                SetLogLevel(-1) # Suppress noisy Vosk/Kaldi internal logs
             except ImportError as exc:
                 raise RuntimeError("Speech recognition requires the 'vosk' package.") from exc
 

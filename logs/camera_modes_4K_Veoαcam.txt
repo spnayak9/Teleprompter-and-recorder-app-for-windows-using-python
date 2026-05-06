@@ -1,22 +1,22 @@
 
-[in#0 @ 0000016665b68fc0] DirectShow video device options (from video devices)
-[in#0 @ 0000016665b68fc0]  Pin "Capture" (alternative pin name "0")
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=1920x1080 fps=10 max s=1920x1080 fps=60.0002
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=1920x1080 fps=10 max s=1920x1080 fps=60.0002 (pc, bt470bg/bt709/unknown, center)
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=2592x1944 fps=10 max s=2592x1944 fps=30
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=2592x1944 fps=10 max s=2592x1944 fps=30 (pc, bt470bg/bt709/unknown, center)
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=2048x1536 fps=10 max s=2048x1536 fps=30
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=2048x1536 fps=10 max s=2048x1536 fps=30 (pc, bt470bg/bt709/unknown, center)
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=3840x2160 fps=10 max s=3840x2160 fps=30
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=3840x2160 fps=10 max s=3840x2160 fps=30 (pc, bt470bg/bt709/unknown, center)
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=1600x1200 fps=10 max s=1600x1200 fps=30
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=1600x1200 fps=10 max s=1600x1200 fps=30 (pc, bt470bg/bt709/unknown, center)
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=1280x720 fps=10 max s=1280x720 fps=30
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=1280x720 fps=10 max s=1280x720 fps=30 (pc, bt470bg/bt709/unknown, center)
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=800x600 fps=10 max s=800x600 fps=30
-[in#0 @ 0000016665b68fc0]   vcodec=mjpeg  min s=800x600 fps=10 max s=800x600 fps=30 (pc, bt470bg/bt709/unknown, center)
-[in#0 @ 0000016665b68fc0]   pixel_format=yuyv422  min s=800x600 fps=10 max s=800x600 fps=15
-[in#0 @ 0000016665b68fc0]   pixel_format=yuyv422  min s=800x600 fps=10 max s=800x600 fps=15 (tv, bt470bg/bt709/unknown, topleft)
-[in#0 @ 0000016665b68fc0]   pixel_format=yuyv422  min s=640x480 fps=10 max s=640x480 fps=30
-[in#0 @ 0000016665b68fc0]   pixel_format=yuyv422  min s=640x480 fps=10 max s=640x480 fps=30 (tv, bt470bg/bt709/unknown, topleft)
+[in#0 @ 00000226d64a8fc0] DirectShow video device options (from video devices)
+[in#0 @ 00000226d64a8fc0]  Pin "Capture" (alternative pin name "0")
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=1920x1080 fps=10 max s=1920x1080 fps=60.0002
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=1920x1080 fps=10 max s=1920x1080 fps=60.0002 (pc, bt470bg/bt709/unknown, center)
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=2592x1944 fps=10 max s=2592x1944 fps=30
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=2592x1944 fps=10 max s=2592x1944 fps=30 (pc, bt470bg/bt709/unknown, center)
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=2048x1536 fps=10 max s=2048x1536 fps=30
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=2048x1536 fps=10 max s=2048x1536 fps=30 (pc, bt470bg/bt709/unknown, center)
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=3840x2160 fps=10 max s=3840x2160 fps=30
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=3840x2160 fps=10 max s=3840x2160 fps=30 (pc, bt470bg/bt709/unknown, center)
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=1600x1200 fps=10 max s=1600x1200 fps=30
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=1600x1200 fps=10 max s=1600x1200 fps=30 (pc, bt470bg/bt709/unknown, center)
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=1280x720 fps=10 max s=1280x720 fps=30
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=1280x720 fps=10 max s=1280x720 fps=30 (pc, bt470bg/bt709/unknown, center)
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=800x600 fps=10 max s=800x600 fps=30
+[in#0 @ 00000226d64a8fc0]   vcodec=mjpeg  min s=800x600 fps=10 max s=800x600 fps=30 (pc, bt470bg/bt709/unknown, center)
+[in#0 @ 00000226d64a8fc0]   pixel_format=yuyv422  min s=800x600 fps=10 max s=800x600 fps=15
+[in#0 @ 00000226d64a8fc0]   pixel_format=yuyv422  min s=800x600 fps=10 max s=800x600 fps=15 (tv, bt470bg/bt709/unknown, topleft)
+[in#0 @ 00000226d64a8fc0]   pixel_format=yuyv422  min s=640x480 fps=10 max s=640x480 fps=30
+[in#0 @ 00000226d64a8fc0]   pixel_format=yuyv422  min s=640x480 fps=10 max s=640x480 fps=30 (tv, bt470bg/bt709/unknown, topleft)
 Error opening input file video=4K Veoαcam.
