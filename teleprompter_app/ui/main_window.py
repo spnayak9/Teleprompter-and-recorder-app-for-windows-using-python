@@ -14,6 +14,7 @@ from teleprompter_app.ui_main import PreviewOverlay, MainToolbarControls
 from teleprompter_app.utils.config import AppSettings
 from teleprompter_app.system_profile import SystemProfile
 from teleprompter_app.ui_config import ConfigDialog
+from teleprompter_app.ui.script_editor import ScriptEditorDialog
 
 
 class MainWindow(QMainWindow):
@@ -36,6 +37,7 @@ class MainWindow(QMainWindow):
     # Emitted when the config dialog verifies encoders so the controller
     # can update its system_profile with the latest verification state.
     profile_updated = Signal(object)  # carries the updated SystemProfile
+    script_pasted = Signal(str)
     
     # Manual navigation for subtitles
     next_word_requested = Signal()
@@ -62,6 +64,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.settings_dock)
 
         self._build_toolbar()
+        self._build_menu()
         self.main_controls.populate_preview_cameras(system_profile.cameras)
         self._connect_signals()
         self.statusBar().showMessage("Ready")
@@ -112,6 +115,25 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         self.main_controls = MainToolbarControls(self)
         toolbar.addWidget(self.main_controls)
+
+    def _build_menu(self) -> None:
+        menubar = self.menuBar()
+        script_menu = menubar.addMenu("Script")
+        
+        self.edit_script_action = QAction("Edit Script / Paste", self)
+        self.edit_script_action.setShortcut("Ctrl+E")
+        self.edit_script_action.triggered.connect(self._on_edit_script)
+        script_menu.addAction(self.edit_script_action)
+        
+        script_menu.addSeparator()
+        script_menu.addAction(self.open_action)
+
+    def _on_edit_script(self) -> None:
+        # Get current text from teleprompter view
+        current_text = self.teleprompter.get_full_text()
+        dialog = ScriptEditorDialog(current_text, self)
+        dialog.script_updated.connect(self.script_pasted.emit)
+        dialog.exec()
 
     def _apply_shortcut(self, action: QAction, shortcut_str: str, defaults: list) -> None:
         if not shortcut_str:

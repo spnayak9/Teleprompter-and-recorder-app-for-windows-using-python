@@ -46,6 +46,12 @@ class TeleprompterView(QTextBrowser):
         self.highlight_word(-1)
         self.verticalScrollBar().setValue(0)
 
+    def get_full_text(self) -> str:
+        """Return the current plain text of the script."""
+        if not self.tokens:
+            return ""
+        return " ".join([t.text for t in self.tokens])
+
     def apply_settings(self, settings: AppSettings) -> None:
         current_index = self.current_index
         progress_index = self.progress_index

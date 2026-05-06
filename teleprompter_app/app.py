@@ -104,10 +104,12 @@ class TeleprompterController(QObject):
         self.window.main_controls.populate_preview_cameras(self.system_profile.cameras)
         self._refresh_microphones()
         self.apply_settings(self.settings.to_dict())
+        self._load_dummy_script()
 
     def _connect_signals(self):
         # UI -> Controller
         self.window.script_file_selected.connect(self.load_script)
+        self.window.script_pasted.connect(self.on_script_pasted)
         self.window.start_requested.connect(self.start_listening)
         self.window.stop_requested.connect(self.stop_listening)
         self.window.rewind_requested.connect(self.rewind_script)
@@ -253,6 +255,40 @@ class TeleprompterController(QObject):
         except Exception as e:
             logger.exception("Failed to load script")
             QMessageBox.critical(self.window, "Error", f"Failed to load script: {e}")
+
+    @Slot(str)
+    def on_script_pasted(self, text: str):
+        """Handle raw text pasted from the editor."""
+        if not text:
+            return
+            
+        logger.info("Script updated via paste/editor.")
+        # Wrap plain text in minimal HTML for the tokenizer
+        safe_text = text.replace('\n', '<br/>')
+        html_input = f"<div>{safe_text}</div>"
+        tokenized = self.tokenizer.tokenize_html(html_input)
+        
+        self.current_script_text = tokenized.plain_text
+        self.current_script_tokens = tokenized.tokens
+        
+        # Load into UI
+        self.window.set_document(tokenized.html, tokenized.tokens)
+        
+        # Load into alignment engine
+        self.alignment_engine.set_tokens(tokenized.tokens)
+        
+        self.current_highlight_index = -1
+        self.window.set_status(f"Script loaded ({len(tokenized.tokens)} words)")
+
+    def _load_dummy_script(self):
+        dummy = (
+            "Welcome to the AI Teleprompter. "
+            "This application uses advanced speech recognition to track your voice. "
+            "As you speak, the highlighter will follow your words automatically. "
+            "You can also use manual keyboard navigation with the arrow keys. "
+            "To edit this script, use the Script menu at the top."
+        )
+        self.on_script_pasted(dummy)
 
     @Slot()
     def start_listening(self, grammar: list[str] | None = None):
