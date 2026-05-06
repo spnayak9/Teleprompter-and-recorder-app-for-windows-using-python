@@ -50,6 +50,13 @@ class AppSettings:
     speech_sample_rate: int = 16000
     speech_block_size: int = 1024
     
+    # High-Performance Recognition Controls
+    speech_beam: float = 13.0
+    speech_max_active: int = 7000
+    speech_instant_match: bool = False
+    speech_lookahead: int = 20
+    speech_phrase_match_min: int = 1 # Number of words for a match
+    
     # Shortcuts
     shortcut_next_word: str = "Right,Space"
     shortcut_prev_word: str = "Left"

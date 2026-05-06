@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSpinBox,
+    QDoubleSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -409,6 +411,19 @@ class ConfigDialog(QDialog):
         self.speech_rate.addItems(["8000", "11025", "16000", "22050", "32000", "44100", "48000"])
         self.speech_block = QComboBox()
         self.speech_block.addItems(["128", "256", "512", "1024", "2048", "4096"])
+        
+        self.speech_instant = QCheckBox("Instant Match (No Debounce)")
+        self.speech_beam = QDoubleSpinBox()
+        self.speech_beam.setRange(1.0, 30.0)
+        self.speech_beam.setSingleStep(0.5)
+        self.speech_max_active = QSpinBox()
+        self.speech_max_active.setRange(100, 10000)
+        self.speech_max_active.setSingleStep(100)
+        self.speech_lookahead = QSpinBox()
+        self.speech_lookahead.setRange(5, 100)
+        self.speech_match_min = QSpinBox()
+        self.speech_match_min.setRange(1, 5)
+        self.speech_match_min.setToolTip("Minimum consecutive words to confirm a match (1 = fastest)")
 
         speech_form.addRow(self.speech_partial)
         speech_form.addRow(self.speech_grammar)
@@ -418,6 +433,11 @@ class ConfigDialog(QDialog):
         speech_form.addRow("Filler Words", self.speech_fillers)
         speech_form.addRow("Input Sample Rate", self.speech_rate)
         speech_form.addRow("Audio Chunk Size", self.speech_block)
+        speech_form.addRow(self.speech_instant)
+        speech_form.addRow("Search Beam (Speed/Acc)", self.speech_beam)
+        speech_form.addRow("Max Active States", self.speech_max_active)
+        speech_form.addRow("Match Stability (Words)", self.speech_match_min)
+        speech_form.addRow("Lookahead Depth", self.speech_lookahead)
 
         self.subtitle_help = QLabel(
             "<b>Manual</b>: Highlights follow your keys.<br/>"
@@ -786,6 +806,12 @@ class ConfigDialog(QDialog):
         self._set_combo_by_data(self.speech_rate, str(self.settings.speech_sample_rate))
         self._set_combo_by_data(self.speech_block, str(self.settings.speech_block_size))
         
+        self.speech_instant.setChecked(self.settings.speech_instant_match)
+        self.speech_beam.setValue(self.settings.speech_beam)
+        self.speech_max_active.setValue(self.settings.speech_max_active)
+        self.speech_lookahead.setValue(self.settings.speech_lookahead)
+        self.speech_match_min.setValue(self.settings.speech_phrase_match_min)
+        
         # Shortcuts
         self.short_next_word.setText(self.settings.shortcut_next_word)
         self.short_prev_word.setText(self.settings.shortcut_prev_word)
@@ -918,6 +944,12 @@ class ConfigDialog(QDialog):
             "speech_filler_words": self.speech_fillers.text().strip(),
             "speech_sample_rate": int(self.speech_rate.currentText() or 16000),
             "speech_block_size": int(self.speech_block.currentText() or 1024),
+            
+            "speech_instant_match": self.speech_instant.isChecked(),
+            "speech_beam": self.speech_beam.value(),
+            "speech_max_active": self.speech_max_active.value(),
+            "speech_lookahead": self.speech_lookahead.value(),
+            "speech_phrase_match_min": self.speech_match_min.value(),
 
             # Shortcuts
             "shortcut_next_word": self.short_next_word.text().strip(),

@@ -59,6 +59,8 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         sample_rate: int = 16000,
         block_size: int = 4000,
         grammar: list[str] | None = None,
+        beam: float = 13.0,
+        max_active: int = 7000,
     ) -> None:
         self.model_path = Path(model_path).expanduser().resolve()
         self.device_index = device_index
@@ -67,6 +69,8 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         max_block = max(min_block, sample_rate // 10)
         self.block_size = max(min_block, min(block_size, max_block))
         self.grammar = grammar or []
+        self.beam = beam
+        self.max_active = max_active
         self._stop_event = Event()
         self._thread: Thread | None = None
         self._stream: AudioStream | None = None
@@ -232,14 +236,23 @@ class VoskSpeechRecognizer(SpeechRecognizer):
         return RecognitionResult(text=text, words=words, is_final=is_final)
 
     def _create_recognizer(self, recognizer_class, model):  # noqa: ANN001
-        if not self._uses_runtime_grammar():
-            return recognizer_class(model, self.sample_rate)
+        # Vosk KaldiRecognizer can take a JSON config string as the third param if it's NOT a list.
+        # But we also want to support grammar.
+        # If we have grammar, we pass the list.
+        # If we don't have grammar, we can pass the JSON config for beam/max_active.
+        
+        if self._uses_runtime_grammar():
+            try:
+                return recognizer_class(model, self.sample_rate, json.dumps(self.grammar))
+            except Exception:
+                logger.exception("Could not create Vosk grammar recognizer; falling back to full model")
 
-        try:
-            return recognizer_class(model, self.sample_rate, json.dumps(self.grammar))
-        except Exception:
-            logger.exception("Could not create Vosk grammar recognizer; falling back to full model")
-            return recognizer_class(model, self.sample_rate)
+        # Fallback or Full Model: use JSON config for performance
+        config = {
+            "beam": self.beam,
+            "max_active": self.max_active,
+        }
+        return recognizer_class(model, self.sample_rate, json.dumps(config))
 
     def _model_status_message(self) -> str:
         size_mb = self._model_size_mb()

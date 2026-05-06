@@ -275,6 +275,8 @@ class TeleprompterController(QObject):
                 sample_rate=self.settings.speech_sample_rate or self.settings.sample_rate,
                 block_size=self.settings.speech_block_size or self.settings.audio_block_size,
                 grammar=grammar,
+                beam=self.settings.speech_beam,
+                max_active=self.settings.speech_max_active,
             )
             self.recognizer.start(
                 on_result=self.recognition_bridge.on_result,
@@ -311,12 +313,15 @@ class TeleprompterController(QObject):
         # 1. Highlighting / Alignment Logic
         now = time.monotonic()
         debounce_sec = (self.settings.speech_debounce_ms or 300) / 1000.0
-        if now - self._last_speech_highlight_time < debounce_sec:
-            return
+        
+        # Instant match bypasses debounce
+        if not self.settings.speech_instant_match:
+            if now - self._last_speech_highlight_time < debounce_sec:
+                return
 
         # Search in window ahead of current cursor
         start_idx = max(0, self.current_highlight_index)
-        window = self.settings.speech_window_size or 15
+        window = self.settings.speech_lookahead or self.settings.speech_window_size or 20
         
         # Fuzzy threshold mapping: UI 0-5 -> score 90 down to 60
         threshold = 90 - (min(5, self.settings.speech_fuzzy_threshold) * 6)
@@ -329,6 +334,11 @@ class TeleprompterController(QObject):
         )
         
         if matches:
+            # Check phrase match stability: min_match=1 for instant, 2+ for stability
+            min_match = self.settings.speech_phrase_match_min or 1
+            if len(matches) < min_match and not result.is_final:
+                return
+
             latest_match = matches[-1]
             if latest_match.token_index >= self.current_highlight_index:
                 self._last_speech_highlight_time = now
