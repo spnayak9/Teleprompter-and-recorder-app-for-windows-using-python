@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+os.environ["VOSK_LOG_LEVEL"] = "-1"
+
 import audioop
 import json
 import logging

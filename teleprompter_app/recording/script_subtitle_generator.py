@@ -39,66 +39,113 @@ class ScriptSubtitleGenerator:
     def __init__(self, script_text: str, tokens: list[Any] = None) -> None:
         self.script_text = script_text.strip()
         self.tokens = tokens or []
-        
-        # Phrases (v1): Groups of words based on line breaks
         self.phrases: list[list[int]] = []
-        current_phrase = []
         
-        # We need to know which words belong to which phrase (line)
+        if not self.tokens:
+            return
+
+        # Improved splitting: First by line breaks
         lines = self.script_text.splitlines()
         token_ptr = 0
+        
         for line in lines:
             line_text = line.strip()
             if not line_text:
                 continue
-            
-            phrase_token_indices = []
+                
+            # For each line, further split into manageable phrases by punctuation or length
+            # to avoid giant blocks if a line is very long.
             words_in_line = line_text.split()
-            for _ in words_in_line:
-                if token_ptr < len(self.tokens):
-                    phrase_token_indices.append(token_ptr)
-                    token_ptr += 1
+            current_phrase_indices = []
             
-            if phrase_token_indices:
-                self.phrases.append(phrase_token_indices)
+            for word in words_in_line:
+                if token_ptr >= len(self.tokens):
+                    break
+                
+                current_phrase_indices.append(token_ptr)
+                token_ptr += 1
+                
+                # Check if we should end the phrase here:
+                # 1. Word ends with punctuation (sentence end)
+                # 2. Phrase has reached a reasonable size (e.g., 8 words)
+                if word.endswith(('.', '?', '!', ';', ':')) or len(current_phrase_indices) >= 8:
+                    self.phrases.append(current_phrase_indices)
+                    current_phrase_indices = []
+            
+            if current_phrase_indices:
+                self.phrases.append(current_phrase_indices)
+
+    def _get_interpolated_timestamps(self, timeline: SubtitleTimeline, max_duration: float | None = None) -> dict[int, float]:
+        """
+        Ensures tokens between matched events have timestamps by interpolating.
+        Does NOT extrapolate beyond the first/last matched words.
+        """
+        events = timeline.get_events()
+        if not events or not self.tokens:
+            return {ev.token_index: ev.timestamp for ev in events} if events else {}
+
+        # Map known events
+        token_times = {ev.token_index: ev.timestamp for ev in events}
+        
+        # Sort indices to find gaps
+        sorted_indices = sorted(token_times.keys())
+        if not sorted_indices:
+            return {}
+
+        # Interpolate gaps between matched tokens
+        for i in range(len(sorted_indices) - 1):
+            idx_start = sorted_indices[i]
+            idx_end = sorted_indices[i+1]
+            time_start = token_times[idx_start]
+            time_end = token_times[idx_end]
+            
+            num_missing = idx_end - idx_start - 1
+            if num_missing > 0:
+                step = (time_end - time_start) / (num_missing + 1)
+                for j in range(1, num_missing + 1):
+                    token_times[idx_start + j] = time_start + step * j
+        
+        return token_times
 
     def generate_v1_phrase_srt(self, timeline: SubtitleTimeline, max_duration: float | None = None) -> str:
-        """v1: Grouped words based on line breaks, using actual timestamps."""
-        events = timeline.get_events()
-        if not events:
+        """v1: Grouped words, only including phrases that were actually reached."""
+        token_times = self._get_interpolated_timestamps(timeline, max_duration)
+        if not token_times:
             return ""
-
-        # Map token index to timestamp
-        token_times = {ev.token_index: ev.timestamp for ev in events}
         
         blocks: list[SubtitleBlock] = []
         block_idx = 1
         
         for phrase_indices in self.phrases:
-            # Find start time (first word of phrase that has an event)
-            start_time = None
-            for idx in phrase_indices:
-                if idx in token_times:
-                    start_time = token_times[idx]
-                    break
-            
-            if start_time is None:
+            # Find the words in this phrase that have timestamps
+            reached_indices = [idx for idx in phrase_indices if idx in token_times]
+            if not reached_indices:
                 continue
                 
-            # Find end time (start time of the word after the last word of this phrase)
-            last_idx = phrase_indices[-1]
-            end_time = None
+            start_time = token_times[reached_indices[0]]
             
-            # Find the very next event after the last word of this phrase
-            for ev in events:
-                if ev.token_index > last_idx:
-                    end_time = ev.timestamp
+            # Phrase end is either the start of the next reached word, 
+            # or the end of its own last reached word + buffer.
+            last_reached_idx = reached_indices[-1]
+            
+            # Find next reached word in script
+            next_reached_idx = None
+            for i in range(last_reached_idx + 1, len(self.tokens)):
+                if i in token_times:
+                    next_reached_idx = i
                     break
             
-            if end_time is None:
-                end_time = max_duration or (events[-1].timestamp + 1.0)
-
-            # Construct phrase text from tokens
+            if next_reached_idx is not None:
+                end_time = token_times[next_reached_idx]
+            else:
+                # Use max_duration if available, otherwise just a buffer
+                end_time = max_duration or (token_times[last_reached_idx] + 0.8)
+            
+            # Construct text only from the reached words in this phrase
+            # (or the whole phrase text if we want the subtitle to show the full line)
+            # The user said they want to show phrase along with highlight text, 
+            # so they likely want the full phrase text even if they didn't finish it?
+            # Actually, if they spoke part of it, showing the whole line is common.
             phrase_text = " ".join(self.tokens[i].text for i in phrase_indices if i < len(self.tokens))
 
             if max_duration is not None and start_time >= max_duration:
@@ -117,28 +164,30 @@ class ScriptSubtitleGenerator:
         return "\n".join(b.to_srt_block() for b in blocks)
 
     def generate_v2_word_srt(self, timeline: SubtitleTimeline, max_duration: float | None = None) -> str:
-        """v2: Single-word subtitles using actual timestamps."""
-        events = timeline.get_events()
-        if not events:
+        """v2: Every word in the script with interpolated timestamps."""
+        token_times = self._get_interpolated_timestamps(timeline, max_duration)
+        if not token_times or not self.tokens:
             return ""
             
         blocks: list[SubtitleBlock] = []
         
-        for i, event in enumerate(events):
-            start_time = event.timestamp
+        for i in range(len(self.tokens)):
+            if i not in token_times:
+                continue
+                
+            start_time = token_times[i]
             
-            # End time is the start of the next word event
-            if i + 1 < len(events):
-                end_time = events[i+1].timestamp
+            # End time is the start of the next word
+            if i + 1 in token_times:
+                end_time = token_times[i+1]
             else:
-                end_time = max_duration or (start_time + 1.0)
-
+                end_time = start_time + 0.3 # Default word duration
+                
             if max_duration is not None and start_time >= max_duration:
                 break
                 
             display_end = min(end_time, max_duration) if max_duration is not None else end_time
-            
-            token_text = self.tokens[event.token_index].text if event.token_index < len(self.tokens) else "?"
+            token_text = self.tokens[i].text
 
             blocks.append(SubtitleBlock(
                 index=i + 1,

@@ -707,13 +707,15 @@ class TeleprompterController(QObject):
                     self.current_script_text,
                     tokens=self.current_script_tokens
                 )
-                self.subtitle_timeline.start()
+                
                 # Start at current position or 0
                 start_idx = max(0, self.window.teleprompter.current_index)
                 self.current_highlight_index = start_idx
                 
-                # IMPORTANT: Setting _is_recording (above) ensures this highlight is captured at T=0
-                self.window.highlight_word(start_idx)
+                # In non-speech modes, we can highlight the start immediately.
+                # In speech modes, we let the voice trigger the first highlight to keep T=0 accurate.
+                if self.settings.subtitle_timing_mode not in (SubtitleTimingMode.SPEECH, SubtitleTimingMode.SPEECH_ASSISTED):
+                    self.window.highlight_word(start_idx)
 
                 
                 # If in AUTO mode, start the highlighter clock
@@ -792,7 +794,10 @@ class TeleprompterController(QObject):
             QMessageBox.critical(self.window, "Recording Error", str(e))
 
     def _on_recording_started(self):
-        self.recording_started_at = time.time()
+        self.recording_started_at = time.monotonic()
+        if self.subtitle_timeline:
+            self.subtitle_timeline.start()
+            
         self.recording_timer.start(1000)
         self.window.set_recording(True, "Recording...")
         self.window.set_status("Recording in progress...")
@@ -811,7 +816,7 @@ class TeleprompterController(QObject):
             try:
                 self.highlighter_timer.stop()
                 # Use cached started_at if still available, or just save full script
-                duration = time.time() - self.recording_started_at if self.recording_started_at else None
+                duration = time.monotonic() - self.recording_started_at if self.recording_started_at else None
                 self.subtitle_generator.write_all(
                     self.current_recording_paths.subtitle_path,
                     timeline=self.subtitle_timeline,

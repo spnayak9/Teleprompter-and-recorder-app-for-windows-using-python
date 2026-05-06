@@ -43,11 +43,14 @@ def _next_session_id(root: Path) -> int:
             continue
 
         for path in folder.iterdir():
-            if path.is_file() and path.stem.isdigit():
-                try:
-                    used.add(int(path.stem))
-                except ValueError:
-                    continue
+            if not path.is_file():
+                continue
+            
+            # Extract digits from the start of the filename (handles '27.word.srt', '27.mkv', etc)
+            import re
+            match = re.match(r"^(\d+)", path.stem)
+            if match:
+                used.add(int(match.group(1)))
 
     n = 1
     while n in used:
